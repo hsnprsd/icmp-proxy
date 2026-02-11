@@ -1,7 +1,6 @@
 import struct
 from dataclasses import dataclass
 
-
 ICMP_ECHO_REQUEST = 8
 ICMP_ECHO_REQUEST_CODE = 0
 
@@ -52,3 +51,11 @@ class ICMPPacket:
     def to_bytes_no_checksum(self) -> bytes:
         buf = struct.pack("!BBHHH", self.icmp_type, self.icmp_code, 0, 0, 0)
         return buf + self.payload
+
+
+def icmp_echo_request(payload: bytes) -> ICMPPacket:
+    return ICMPPacket(
+        icmp_type=ICMP_ECHO_REQUEST,
+        icmp_code=ICMP_ECHO_REQUEST_CODE,
+        payload=payload,
+    )
