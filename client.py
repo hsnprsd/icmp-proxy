@@ -9,7 +9,6 @@ def main():
         packet = ICMPPacket(
             icmp_type=ICMP_ECHO_REQUEST,
             icmp_code=0,
-            icmp_checksum=0,
             payload=b"hello world",
         )
         sock.sendto(packet.to_bytes(), ("127.0.0.1", 1))
