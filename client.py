@@ -1,7 +1,19 @@
 import socket
 
-from icmp import ICMPPacket, icmp_echo_request
-from proxy import Frame, FrameType, ProxyData, ProxyStart, ProxyStartResponse
+from icmp import (
+    ICMP_ECHO_REQUEST,
+    ICMP_ECHO_REQUEST_CODE,
+    ICMPPacket,
+    icmp_echo_request,
+)
+from proxy import (
+    Frame,
+    FrameType,
+    ProxyClose,
+    ProxyData,
+    ProxyStart,
+    ProxyStartResponse,
+)
 
 SERVER_HOST = "127.0.0.1"
 
@@ -75,6 +87,16 @@ def main():
         print(proxy_data.stream_id)
         print(proxy_data.size)
         print(proxy_data.payload)
+
+        packet = ICMPPacket(
+            icmp_type=ICMP_ECHO_REQUEST,
+            icmp_code=ICMP_ECHO_REQUEST_CODE,
+            payload=Frame(
+                from_host=1,
+                frame_type=FrameType.PROXY_CLOSE,
+                payload=ProxyClose(stream_id=stream_id).encode(),
+            ).encode(),
+        )
 
 
 if __name__ == "__main__":
