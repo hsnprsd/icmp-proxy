@@ -1,7 +1,7 @@
 import socket
 
 from icmp import ICMPPacket, icmp_echo_request
-from proxy import Data, Frame, FrameType, ProxyRequest, ProxyResponse
+from proxy import Frame, FrameType, ProxyData, ProxyStart, ProxyStartResponse
 
 SERVER_HOST = "127.0.0.1"
 
@@ -22,8 +22,8 @@ def main():
             connection=sock,
             frame=Frame(
                 from_host=1,
-                frame_type=FrameType.PROXY_REQUEST,
-                payload=ProxyRequest(
+                frame_type=FrameType.PROXY_START,
+                payload=ProxyStart(
                     remote_host="google.com",
                     remote_port=80,
                 ).encode(),
@@ -38,12 +38,12 @@ def main():
             if frame.from_host != 0:
                 continue
 
-            if frame.frame_type != FrameType.PROXY_RESPONSE:
+            if frame.frame_type != FrameType.PROXY_START_RESPONSE:
                 raise Exception("Expected a proxy response frame")
             break
 
-        proxy_response = ProxyResponse.decode(frame.payload)
-        stream_id = proxy_response.stream_id
+        proxy_start_response = ProxyStartResponse.decode(frame.payload)
+        stream_id = proxy_start_response.stream_id
 
         request = "GET / HTTP/1.1\r\nHost: google.com\r\n\r\n".encode()
 
@@ -51,8 +51,8 @@ def main():
             connection=sock,
             frame=Frame(
                 from_host=1,
-                frame_type=FrameType.DATA,
-                payload=Data(
+                frame_type=FrameType.PROXY_DATA,
+                payload=ProxyData(
                     stream_id=stream_id,
                     size=len(request),
                     payload=request,
@@ -67,14 +67,14 @@ def main():
             if frame.from_host != 0:
                 continue
 
-            if frame.frame_type != FrameType.DATA:
+            if frame.frame_type != FrameType.PROXY_DATA:
                 raise Exception("Expected a data frame")
             break
 
-        data = Data.decode(frame.payload)
-        print(data.stream_id)
-        print(data.size)
-        print(data.payload)
+        proxy_data = ProxyData.decode(frame.payload)
+        print(proxy_data.stream_id)
+        print(proxy_data.size)
+        print(proxy_data.payload)
 
 
 if __name__ == "__main__":

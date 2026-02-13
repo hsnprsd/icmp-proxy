@@ -3,9 +3,9 @@ from enum import Enum
 
 
 class FrameType(Enum):
-    PROXY_REQUEST = 0
-    PROXY_RESPONSE = 1
-    DATA = 2
+    PROXY_START = 0
+    PROXY_START_RESPONSE = 1
+    PROXY_DATA = 2
 
 
 @dataclass
@@ -36,7 +36,7 @@ class Frame:
 
 
 @dataclass
-class ProxyRequest:
+class ProxyStart:
     remote_host: str
     remote_port: int
 
@@ -54,14 +54,14 @@ class ProxyRequest:
         remote_host = data[:remote_host_length].decode()
         data = data[remote_host_length:]
         remote_port = int.from_bytes(data[:2])
-        return ProxyRequest(
+        return ProxyStart(
             remote_host=remote_host,
             remote_port=remote_port,
         )
 
 
 @dataclass
-class ProxyResponse:
+class ProxyStartResponse:
     stream_id: int
 
     def encode(self) -> bytes:
@@ -69,11 +69,11 @@ class ProxyResponse:
 
     @staticmethod
     def decode(data: bytes):
-        return ProxyResponse(stream_id=int.from_bytes(data[:4]))
+        return ProxyStartResponse(stream_id=int.from_bytes(data[:4]))
 
 
 @dataclass
-class Data:
+class ProxyData:
     stream_id: int
     size: int
     payload: bytes
@@ -88,7 +88,7 @@ class Data:
         size = int.from_bytes(data[:2])
         data = data[2:]
         payload = data[:size]
-        return Data(
+        return ProxyData(
             stream_id=stream_id,
             size=size,
             payload=payload,
