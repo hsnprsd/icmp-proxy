@@ -17,22 +17,25 @@ def relay(
     stream_id: int,
 ):
     outboud_connection = outbound_connections[stream_id]
-    data = outboud_connection.recv(4096)
+    while True:
+        data = outboud_connection.recv(4096)
+        if not data:
+            break
 
-    packet = ICMPPacket(
-        icmp_type=ICMP_ECHO_REPLY,
-        icmp_code=ICMP_ECHO_REPLY_CODE,
-        payload=Frame(
-            from_host=host_id,
-            frame_type=FrameType.DATA,
-            payload=Data(
-                stream_id=stream_id,
-                size=len(data),
-                payload=data,
+        packet = ICMPPacket(
+            icmp_type=ICMP_ECHO_REPLY,
+            icmp_code=ICMP_ECHO_REPLY_CODE,
+            payload=Frame(
+                from_host=host_id,
+                frame_type=FrameType.DATA,
+                payload=Data(
+                    stream_id=stream_id,
+                    size=len(data),
+                    payload=data,
+                ).encode(),
             ).encode(),
-        ).encode(),
-    )
-    connection.sendto(packet.to_bytes(), (client_address, 0))
+        )
+        connection.sendto(packet.to_bytes(), (client_address, 0))
 
 
 def process_proxy_request(
