@@ -1,15 +1,7 @@
 import socket
 
 from icmp import ICMPPacket, icmp_echo_request
-from proxy import (
-    FRAME_TYPE_DATA,
-    FRAME_TYPE_PROXY_REQUEST,
-    FRAME_TYPE_PROXY_RESPONSE,
-    Data,
-    Frame,
-    ProxyRequest,
-    ProxyResponse,
-)
+from proxy import Data, Frame, FrameType, ProxyRequest, ProxyResponse
 
 SERVER_HOST = "127.0.0.1"
 
@@ -30,7 +22,7 @@ def main():
             connection=sock,
             frame=Frame(
                 from_host=1,
-                frame_type=FRAME_TYPE_PROXY_REQUEST,
+                frame_type=FrameType.PROXY_REQUEST,
                 payload=ProxyRequest(
                     remote_host="google.com",
                     remote_port=80,
@@ -46,7 +38,7 @@ def main():
             if frame.from_host != 0:
                 continue
 
-            if frame.frame_type != FRAME_TYPE_PROXY_RESPONSE:
+            if frame.frame_type != FrameType.PROXY_RESPONSE:
                 raise Exception("Expected a proxy response frame")
             break
 
@@ -59,7 +51,7 @@ def main():
             connection=sock,
             frame=Frame(
                 from_host=1,
-                frame_type=FRAME_TYPE_DATA,
+                frame_type=FrameType.DATA,
                 payload=Data(
                     stream_id=stream_id,
                     size=len(request),
@@ -75,7 +67,7 @@ def main():
             if frame.from_host != 0:
                 continue
 
-            if frame.frame_type != FRAME_TYPE_DATA:
+            if frame.frame_type != FrameType.DATA:
                 raise Exception("Expected a data frame")
             break
 

@@ -1,15 +1,7 @@
 import socket
 
 from icmp import ICMPPacket
-from proxy import (
-    FRAME_TYPE_DATA,
-    FRAME_TYPE_PROXY_REQUEST,
-    FRAME_TYPE_PROXY_RESPONSE,
-    Data,
-    Frame,
-    ProxyRequest,
-    ProxyResponse,
-)
+from proxy import Data, Frame, FrameType, ProxyRequest, ProxyResponse
 
 
 def main():
@@ -24,7 +16,7 @@ def main():
             if frame.from_host != 1:
                 continue
 
-            if frame.frame_type != FRAME_TYPE_PROXY_REQUEST:
+            if frame.frame_type != FrameType.PROXY_REQUEST:
                 raise Exception("Expected a proxy request frame")
             break
 
@@ -38,7 +30,7 @@ def main():
         proxy_response = ProxyResponse(stream_id=stream_id)
         frame = Frame(
             from_host=0,
-            frame_type=FRAME_TYPE_PROXY_RESPONSE,
+            frame_type=FrameType.PROXY_RESPONSE,
             payload=proxy_response.encode(),
         )
         packet = ICMPPacket(icmp_type=0, icmp_code=0, payload=frame.encode())
@@ -52,7 +44,7 @@ def main():
             if frame.from_host != 1:
                 continue
 
-            if frame.frame_type != FRAME_TYPE_DATA:
+            if frame.frame_type != FrameType.DATA:
                 raise Exception("Expected a data frame")
             break
 
@@ -68,7 +60,11 @@ def main():
 
         packet = remote_conn.recv(4096)
         data = Data(stream_id=stream_id, size=len(packet), payload=packet)
-        frame = Frame(from_host=0, frame_type=FRAME_TYPE_DATA, payload=data.encode())
+        frame = Frame(
+            from_host=0,
+            frame_type=FrameType.DATA,
+            payload=data.encode(),
+        )
         packet = ICMPPacket(icmp_type=0, icmp_code=0, payload=frame.encode())
         sock.sendto(packet.to_bytes(), ("127.0.0.1", 0))
 

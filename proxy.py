@@ -1,24 +1,31 @@
 from dataclasses import dataclass
+from enum import Enum
 
-FRAME_TYPE_PROXY_REQUEST = 0
-FRAME_TYPE_PROXY_RESPONSE = 1
-FRAME_TYPE_DATA = 2
+
+class FrameType(Enum):
+    PROXY_REQUEST = 0
+    PROXY_RESPONSE = 1
+    DATA = 2
 
 
 @dataclass
 class Frame:
     from_host: int  # 0 = Server, 1 = Client
-    frame_type: int
+    frame_type: FrameType
     payload: bytes
 
     def encode(self) -> bytes:
-        return self.from_host.to_bytes(1) + self.frame_type.to_bytes(1) + self.payload
+        return (
+            self.from_host.to_bytes(1)
+            + self.frame_type.value.to_bytes(1)
+            + self.payload
+        )
 
     @staticmethod
     def decode(data: bytes):
         from_host = int.from_bytes(data[:1])
         data = data[1:]
-        frame_type = int.from_bytes(data[:1])
+        frame_type = FrameType(int.from_bytes(data[:1]))
         data = data[1:]
         payload = data
         return Frame(
