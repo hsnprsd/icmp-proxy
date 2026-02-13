@@ -6,6 +6,7 @@ class FrameType(Enum):
     PROXY_START = 0
     PROXY_START_RESPONSE = 1
     PROXY_DATA = 2
+    PROXY_CLOSE = 3
 
 
 @dataclass
@@ -93,3 +94,16 @@ class ProxyData:
             size=size,
             payload=payload,
         )
+
+
+@dataclass
+class ProxyClose:
+    stream_id: int
+
+    def encode(self) -> bytes:
+        return self.stream_id.to_bytes(4)
+
+    @staticmethod
+    def decode(data: bytes):
+        stream_id = int.from_bytes(data[:4])
+        return ProxyClose(stream_id=stream_id)
