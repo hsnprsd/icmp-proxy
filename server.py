@@ -21,10 +21,12 @@ def main():
             packet = sock.recv(4096)
             packet = ICMPPacket.from_bytes(packet)
             frame = Frame.decode(packet.payload)
+            if frame.from_host != 1:
+                continue
+
             if frame.frame_type != FRAME_TYPE_PROXY_REQUEST:
-                pass
-            else:
-                break
+                raise Exception("Expected a proxy request frame")
+            break
 
         proxy_request = ProxyRequest.decode(frame.payload)
         print(proxy_request.remote_host, proxy_request.remote_port)
@@ -35,6 +37,7 @@ def main():
         stream_id = 0
         proxy_response = ProxyResponse(stream_id=stream_id)
         frame = Frame(
+            from_host=0,
             frame_type=FRAME_TYPE_PROXY_RESPONSE,
             payload=proxy_response.encode(),
         )
@@ -45,12 +48,13 @@ def main():
             packet = sock.recv(4096)
             packet = ICMPPacket.from_bytes(packet)
             frame = Frame.decode(packet.payload)
-            if frame.frame_type != FRAME_TYPE_DATA:
+            print(frame)
+            if frame.from_host != 1:
                 continue
 
-            data = Data.decode(frame.payload)
-            if data.from_host == 1:
-                break
+            if frame.frame_type != FRAME_TYPE_DATA:
+                raise Exception("Expected a data frame")
+            break
 
         data = Data.decode(frame.payload)
         print(data.stream_id)
@@ -63,8 +67,8 @@ def main():
         remote_conn.sendall(data.payload)
 
         packet = remote_conn.recv(4096)
-        data = Data(from_host=0, stream_id=stream_id, size=len(packet), payload=packet)
-        frame = Frame(frame_type=FRAME_TYPE_DATA, payload=data.encode())
+        data = Data(stream_id=stream_id, size=len(packet), payload=packet)
+        frame = Frame(from_host=0, frame_type=FRAME_TYPE_DATA, payload=data.encode())
         packet = ICMPPacket(icmp_type=0, icmp_code=0, payload=frame.encode())
         sock.sendto(packet.to_bytes(), ("127.0.0.1", 0))
 
