@@ -3,6 +3,8 @@ from dataclasses import dataclass
 
 ICMP_ECHO_REQUEST = 8
 ICMP_ECHO_REQUEST_CODE = 0
+ICMP_ECHO_REPLY = 0
+ICMP_ECHO_REPLY_CODE = 0
 
 
 def inernet_checksum(data: bytes) -> int:
