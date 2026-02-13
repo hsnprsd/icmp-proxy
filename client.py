@@ -11,6 +11,8 @@ from proxy import (
     ProxyResponse,
 )
 
+SERVER_HOST = "127.0.0.1"
+
 
 def main():
     with socket.socket(socket.AF_INET, socket.SOCK_RAW, socket.IPPROTO_ICMP) as sock:
@@ -27,7 +29,7 @@ def main():
                 ).encode(),
             ).encode()
         )
-        sock.sendto(packet.to_bytes(), ("127.0.0.1", 1))
+        sock.sendto(packet.to_bytes(), (SERVER_HOST, 1))
 
         # receive proxy response
         while True:
@@ -57,7 +59,7 @@ def main():
                 ).encode(),
             ).encode()
         )
-        sock.sendto(packet.to_bytes(), ("127.0.0.1", 1))
+        sock.sendto(packet.to_bytes(), (SERVER_HOST, 1))
 
         while True:
             packet = sock.recv(4096)
