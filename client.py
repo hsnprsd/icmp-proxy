@@ -14,22 +14,29 @@ from proxy import (
 SERVER_HOST = "127.0.0.1"
 
 
+def send_frame(connection: socket.socket, frame: Frame) -> None:
+    connection.sendto(
+        icmp_echo_request(payload=frame.encode()).to_bytes(),
+        (SERVER_HOST, 0),
+    )
+
+
 def main():
     with socket.socket(socket.AF_INET, socket.SOCK_RAW, socket.IPPROTO_ICMP) as sock:
         sock.bind(("0.0.0.0", 0))
 
         # send proxy request
-        packet = icmp_echo_request(
-            payload=Frame(
+        send_frame(
+            connection=sock,
+            frame=Frame(
                 from_host=1,
                 frame_type=FRAME_TYPE_PROXY_REQUEST,
                 payload=ProxyRequest(
                     remote_host="google.com",
                     remote_port=80,
                 ).encode(),
-            ).encode()
+            ),
         )
-        sock.sendto(packet.to_bytes(), (SERVER_HOST, 1))
 
         # receive proxy response
         while True:
@@ -48,8 +55,9 @@ def main():
 
         request = "GET / HTTP/1.1\r\nHost: google.com\r\n\r\n".encode()
 
-        packet = icmp_echo_request(
-            payload=Frame(
+        send_frame(
+            connection=sock,
+            frame=Frame(
                 from_host=1,
                 frame_type=FRAME_TYPE_DATA,
                 payload=Data(
@@ -57,9 +65,8 @@ def main():
                     size=len(request),
                     payload=request,
                 ).encode(),
-            ).encode()
+            ),
         )
-        sock.sendto(packet.to_bytes(), (SERVER_HOST, 1))
 
         while True:
             packet = sock.recv(4096)
@@ -76,9 +83,6 @@ def main():
         print(data.stream_id)
         print(data.size)
         print(data.payload)
-
-        parts = data.payload.split(b"\r\n")
-        print(parts)
 
 
 if __name__ == "__main__":
