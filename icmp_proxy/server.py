@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+from dataclasses import dataclass, field
 import logging
 import os
+import select
 import socket
+import time
 from threading import Lock, Thread
 
 from .auth import (
@@ -21,10 +24,12 @@ from .protocol import (
     Close,
     CloseAck,
     Data,
+    DatagramPacket,
     Frame,
     Hello,
     HelloAck,
     MessageType,
+    OpenDatagram,
     OpenErr,
     OpenOk,
     OpenStream,
@@ -32,6 +37,17 @@ from .protocol import (
 from .transport import ReliableICMPSession
 
 LOGGER = logging.getLogger("icmp_proxy.server")
+
+
+@dataclass
+class TCPStreamState:
+    socket: socket.socket
+
+
+@dataclass
+class DatagramStreamState:
+    sockets: dict[int, socket.socket] = field(default_factory=dict)
+    sockets_lock: Lock = field(default_factory=Lock)
 
 
 def configure_logging(level_name: str) -> None:
@@ -45,7 +61,7 @@ def configure_logging(level_name: str) -> None:
 class Server:
     def __init__(self, config: ServerConfig) -> None:
         self.config = config
-        self.outbound_connections: dict[int, socket.socket] = {}
+        self.outbound_streams: dict[int, TCPStreamState | DatagramStreamState] = {}
         self.connection_lock = Lock()
         self.psk = load_psk(config.common.psk)
         if config.common.psk.strip() == DEFAULT_PSK:
@@ -97,10 +113,10 @@ class Server:
         LOGGER.info("stopping server")
         self.reliable.stop()
         with self.connection_lock:
-            connections = list(self.outbound_connections.values())
-            self.outbound_connections.clear()
-        for connection in connections:
-            connection.close()
+            streams = list(self.outbound_streams.values())
+            self.outbound_streams.clear()
+        for stream in streams:
+            self._close_stream_state(stream)
         self.socket.close()
         LOGGER.info("server stopped")
 
@@ -113,18 +129,28 @@ class Server:
             if stream_id == 0:
                 continue
             with self.connection_lock:
-                if stream_id not in self.outbound_connections:
+                if stream_id not in self.outbound_streams:
                     return stream_id
 
     def _stream_exists(self, stream_id: int) -> bool:
         with self.connection_lock:
-            return stream_id in self.outbound_connections
+            return stream_id in self.outbound_streams
+
+    def _close_stream_state(self, stream: TCPStreamState | DatagramStreamState) -> None:
+        if isinstance(stream, TCPStreamState):
+            stream.socket.close()
+            return
+        with stream.sockets_lock:
+            sockets = list(stream.sockets.values())
+            stream.sockets.clear()
+        for udp_socket in sockets:
+            udp_socket.close()
 
     def _close_stream(self, stream_id: int) -> None:
         with self.connection_lock:
-            outbound_connection = self.outbound_connections.pop(stream_id, None)
-        if outbound_connection is not None:
-            outbound_connection.close()
+            stream = self.outbound_streams.pop(stream_id, None)
+        if stream is not None:
+            self._close_stream_state(stream)
 
     def _send_open_err(self, *, session_id: int, error_code: int, reason: str) -> None:
         self.reliable.send_untracked(
@@ -134,11 +160,12 @@ class Server:
             payload=OpenErr(error_code=error_code, reason=reason).encode(),
         )
 
-    def relay(self, session_id: int, stream_id: int) -> None:
+    def relay_tcp(self, session_id: int, stream_id: int) -> None:
         with self.connection_lock:
-            outbound_connection = self.outbound_connections.get(stream_id)
-        if outbound_connection is None:
+            stream = self.outbound_streams.get(stream_id)
+        if not isinstance(stream, TCPStreamState):
             return
+        outbound_connection = stream.socket
         try:
             while True:
                 data = outbound_connection.recv(4096)
@@ -155,6 +182,86 @@ class Server:
                     )
         except OSError:
             pass
+        finally:
+            if self._stream_exists(stream_id):
+                self.reliable.send_untracked(
+                    msg_type=MessageType.CLOSE,
+                    session_id=session_id,
+                    stream_id=stream_id,
+                    payload=Close().encode(),
+                )
+            self._close_stream(stream_id)
+            self.reliable.clear_stream_state(stream_id)
+
+    def _send_udp_datagram(self, stream: DatagramStreamState, packet: DatagramPacket) -> None:
+        if packet.remote_port == 0:
+            return
+        try:
+            addr_info = socket.getaddrinfo(
+                packet.remote_host,
+                packet.remote_port,
+                type=socket.SOCK_DGRAM,
+            )
+        except OSError:
+            return
+        family, _socktype, proto, _canonname, sockaddr = addr_info[0]
+        with stream.sockets_lock:
+            udp_socket = stream.sockets.get(family)
+            if udp_socket is None:
+                try:
+                    udp_socket = socket.socket(family, socket.SOCK_DGRAM, proto)
+                    if family == socket.AF_INET6:
+                        try:
+                            udp_socket.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 0)
+                        except OSError:
+                            pass
+                        udp_socket.bind(("::", 0))
+                    else:
+                        udp_socket.bind(("0.0.0.0", 0))
+                    udp_socket.setblocking(False)
+                except OSError:
+                    return
+                stream.sockets[family] = udp_socket
+        try:
+            udp_socket.sendto(packet.payload, sockaddr)
+        except OSError:
+            return
+
+    def relay_datagram(self, session_id: int, stream_id: int) -> None:
+        with self.connection_lock:
+            stream = self.outbound_streams.get(stream_id)
+        if not isinstance(stream, DatagramStreamState):
+            return
+        try:
+            while self._stream_exists(stream_id):
+                with stream.sockets_lock:
+                    sockets = list(stream.sockets.values())
+                if not sockets:
+                    time.sleep(0.05)
+                    continue
+                try:
+                    readable, _, _ = select.select(sockets, [], [], 0.5)
+                except OSError:
+                    break
+                mtu_payload = max(1, self.config.session.mtu_payload)
+                for udp_socket in readable:
+                    try:
+                        payload, sender = udp_socket.recvfrom(65535)
+                    except OSError:
+                        continue
+                    encoded = DatagramPacket(
+                        remote_host=sender[0],
+                        remote_port=sender[1],
+                        payload=payload,
+                    ).encode()
+                    if len(encoded) > mtu_payload:
+                        continue
+                    self.reliable.send_reliable(
+                        msg_type=MessageType.DATA,
+                        session_id=session_id,
+                        stream_id=stream_id,
+                        payload=Data(payload=encoded).encode(),
+                    )
         finally:
             if self._stream_exists(stream_id):
                 self.reliable.send_untracked(
@@ -225,11 +332,11 @@ class Server:
         )
         if self.active_session_id is not None and self.active_session_id != session_id:
             with self.connection_lock:
-                old_stream_ids = list(self.outbound_connections.keys())
-                old_connections = list(self.outbound_connections.values())
-                self.outbound_connections.clear()
-            for conn in old_connections:
-                conn.close()
+                old_stream_ids = list(self.outbound_streams.keys())
+                old_streams = list(self.outbound_streams.values())
+                self.outbound_streams.clear()
+            for stream in old_streams:
+                self._close_stream_state(stream)
             for old_stream_id in old_stream_ids:
                 self.reliable.clear_stream_state(old_stream_id)
         hello_ack = HelloAck(
@@ -263,7 +370,7 @@ class Server:
             return
 
         with self.connection_lock:
-            if len(self.outbound_connections) >= self.config.max_streams:
+            if len(self.outbound_streams) >= self.config.max_streams:
                 self._send_open_err(
                     session_id=frame.session_id,
                     error_code=429,
@@ -288,10 +395,49 @@ class Server:
 
         stream_id = self._allocate_stream_id()
         with self.connection_lock:
-            self.outbound_connections[stream_id] = outbound_connection
+            self.outbound_streams[stream_id] = TCPStreamState(socket=outbound_connection)
 
         relay_thread = Thread(
-            target=self.relay,
+            target=self.relay_tcp,
+            args=(frame.session_id, stream_id),
+            daemon=True,
+        )
+        relay_thread.start()
+
+        self.reliable.send_reliable(
+            msg_type=MessageType.OPEN_OK,
+            session_id=frame.session_id,
+            stream_id=stream_id,
+            payload=OpenOk(assigned_stream_id=stream_id).encode(),
+        )
+
+    def process_open_datagram(self, frame: Frame) -> None:
+        try:
+            OpenDatagram.decode(frame.payload)
+        except ValueError:
+            self._send_open_err(
+                session_id=frame.session_id,
+                error_code=400,
+                reason="invalid open datagram payload",
+            )
+            return
+
+        with self.connection_lock:
+            if len(self.outbound_streams) >= self.config.max_streams:
+                self._send_open_err(
+                    session_id=frame.session_id,
+                    error_code=429,
+                    reason="too many streams",
+                )
+                return
+
+        stream_id = self._allocate_stream_id()
+        datagram_stream = DatagramStreamState()
+        with self.connection_lock:
+            self.outbound_streams[stream_id] = datagram_stream
+
+        relay_thread = Thread(
+            target=self.relay_datagram,
             args=(frame.session_id, stream_id),
             daemon=True,
         )
@@ -307,14 +453,21 @@ class Server:
     def process_data(self, frame: Frame) -> None:
         payload = Data.decode(frame.payload).payload
         with self.connection_lock:
-            connection = self.outbound_connections.get(frame.stream_id)
-        if connection is None:
+            stream = self.outbound_streams.get(frame.stream_id)
+        if stream is None:
+            return
+        if isinstance(stream, TCPStreamState):
+            try:
+                stream.socket.sendall(payload)
+            except OSError:
+                self._close_stream(frame.stream_id)
+                self.reliable.clear_stream_state(frame.stream_id)
             return
         try:
-            connection.sendall(payload)
-        except OSError:
-            self._close_stream(frame.stream_id)
-            self.reliable.clear_stream_state(frame.stream_id)
+            packet = DatagramPacket.decode(payload)
+        except ValueError:
+            return
+        self._send_udp_datagram(stream, packet)
 
     def process_close(self, frame: Frame) -> None:
         try:
@@ -350,6 +503,8 @@ class Server:
 
         if frame.msg_type == MessageType.OPEN_STREAM:
             self.process_open_stream(frame)
+        elif frame.msg_type == MessageType.OPEN_DATAGRAM:
+            self.process_open_datagram(frame)
         elif frame.msg_type == MessageType.DATA:
             self.process_data(frame)
         elif frame.msg_type == MessageType.CLOSE:

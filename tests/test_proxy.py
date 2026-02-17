@@ -4,10 +4,12 @@ from icmp_proxy.protocol import (
     Close,
     CloseAck,
     Data,
+    DatagramPacket,
     Frame,
     Hello,
     HelloAck,
     MessageType,
+    OpenDatagram,
     OpenErr,
     OpenOk,
     OpenStream,
@@ -64,6 +66,11 @@ def test_open_stream_round_trip() -> None:
     assert OpenStream.decode(open_stream.encode()) == open_stream
 
 
+def test_open_datagram_round_trip() -> None:
+    open_datagram = OpenDatagram()
+    assert OpenDatagram.decode(open_datagram.encode()) == open_datagram
+
+
 def test_open_ok_round_trip() -> None:
     open_ok = OpenOk(assigned_stream_id=12345)
     assert OpenOk.decode(open_ok.encode()) == open_ok
@@ -77,6 +84,25 @@ def test_open_err_round_trip() -> None:
 def test_data_round_trip() -> None:
     payload = Data(payload=b"chunk")
     assert Data.decode(payload.encode()) == payload
+
+
+def test_datagram_packet_round_trip_domain() -> None:
+    payload = DatagramPacket(remote_host="example.com", remote_port=53, payload=b"ping")
+    assert DatagramPacket.decode(payload.encode()) == payload
+
+
+def test_datagram_packet_round_trip_ipv6() -> None:
+    payload = DatagramPacket(remote_host="2001:db8::1", remote_port=5353, payload=b"pong")
+    assert DatagramPacket.decode(payload.encode()) == payload
+
+
+def test_datagram_packet_rejects_invalid_atyp() -> None:
+    try:
+        DatagramPacket.decode(b"\x09")
+    except ValueError as exc:
+        assert "address type" in str(exc)
+    else:
+        raise AssertionError("expected ValueError")
 
 
 def test_close_decode_rejects_payload() -> None:

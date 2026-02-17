@@ -132,9 +132,10 @@ sudo -E ICMP_PROXY_PSK=dev-secret ICMP_PROXY_CLIENT_ID=default-client ICMP_PROXY
 
 The client process starts both local proxy listeners by default:
 - HTTP proxy: `127.0.0.1:8080`
-- SOCKS5 proxy (no-auth, CONNECT only): `127.0.0.1:1080`
+- SOCKS5 proxy (no-auth, `CONNECT` + `UDP ASSOCIATE`): `127.0.0.1:1080`
 
 Configure your application for either endpoint. For HTTPS over HTTP proxy, clients should use normal `CONNECT` mode.
+SOCKS5 UDP forwarding supports unfragmented datagrams (`FRAG=0`).
 
 Restore host default:
 

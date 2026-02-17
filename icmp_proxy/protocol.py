@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ipaddress
 import struct
 from dataclasses import dataclass
 from enum import IntEnum
@@ -20,6 +21,7 @@ class MessageType(IntEnum):
     CLOSE = 7
     CLOSE_ACK = 8
     KEEPALIVE = 9
+    OPEN_DATAGRAM = 10
 
 
 FLAG_RELIABLE = 0x01
@@ -227,6 +229,18 @@ class OpenStream:
 
 
 @dataclass(frozen=True)
+class OpenDatagram:
+    def encode(self) -> bytes:
+        return b""
+
+    @staticmethod
+    def decode(data: bytes) -> "OpenDatagram":
+        if data:
+            raise ValueError("open datagram payload must be empty")
+        return OpenDatagram()
+
+
+@dataclass(frozen=True)
 class OpenOk:
     assigned_stream_id: int
 
@@ -276,6 +290,72 @@ class Data:
     @staticmethod
     def decode(data: bytes) -> "Data":
         return Data(payload=data)
+
+
+@dataclass(frozen=True)
+class DatagramPacket:
+    remote_host: str
+    remote_port: int
+    payload: bytes
+
+    def encode(self) -> bytes:
+        if not (0 <= self.remote_port <= 65535):
+            raise ValueError("remote_port out of range")
+        try:
+            addr = ipaddress.ip_address(self.remote_host)
+        except ValueError:
+            host_bytes = self.remote_host.encode("idna")
+            if not host_bytes:
+                raise ValueError("remote_host is empty")
+            if len(host_bytes) > 255:
+                raise ValueError("remote_host too long")
+            return (
+                b"\x03"
+                + len(host_bytes).to_bytes(1, "big")
+                + host_bytes
+                + self.remote_port.to_bytes(2, "big")
+                + self.payload
+            )
+        if isinstance(addr, ipaddress.IPv4Address):
+            return b"\x01" + addr.packed + self.remote_port.to_bytes(2, "big") + self.payload
+        return b"\x04" + addr.packed + self.remote_port.to_bytes(2, "big") + self.payload
+
+    @staticmethod
+    def decode(data: bytes) -> "DatagramPacket":
+        if len(data) < 1:
+            raise ValueError("datagram payload too short")
+        address_type = data[0]
+        cursor = 1
+        if address_type == 0x01:
+            if len(data) < cursor + 4 + 2:
+                raise ValueError("truncated datagram ipv4 payload")
+            remote_host = str(ipaddress.IPv4Address(data[cursor : cursor + 4]))
+            cursor += 4
+        elif address_type == 0x03:
+            if len(data) < cursor + 1:
+                raise ValueError("truncated datagram domain payload")
+            size = data[cursor]
+            cursor += 1
+            if size == 0:
+                raise ValueError("empty datagram domain")
+            if len(data) < cursor + size + 2:
+                raise ValueError("truncated datagram domain payload")
+            remote_host = data[cursor : cursor + size].decode("idna")
+            cursor += size
+        elif address_type == 0x04:
+            if len(data) < cursor + 16 + 2:
+                raise ValueError("truncated datagram ipv6 payload")
+            remote_host = str(ipaddress.IPv6Address(data[cursor : cursor + 16]))
+            cursor += 16
+        else:
+            raise ValueError("unsupported datagram address type")
+        remote_port = int.from_bytes(data[cursor : cursor + 2], "big")
+        cursor += 2
+        return DatagramPacket(
+            remote_host=remote_host,
+            remote_port=remote_port,
+            payload=data[cursor:],
+        )
 
 
 @dataclass(frozen=True)

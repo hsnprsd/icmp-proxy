@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import ipaddress
 import logging
 import socket
 from threading import Event, Lock, Thread
@@ -21,9 +22,11 @@ from .protocol import (
     Close,
     CloseAck,
     Data,
+    DatagramPacket,
     Hello,
     HelloAck,
     MessageType,
+    OpenDatagram,
     OpenErr,
     OpenOk,
     OpenStream,
@@ -39,6 +42,7 @@ SOCKS_VERSION = 0x05
 SOCKS5_METHOD_NO_AUTH = 0x00
 SOCKS5_METHOD_NO_ACCEPTABLE = 0xFF
 SOCKS5_CMD_CONNECT = 0x01
+SOCKS5_CMD_UDP_ASSOCIATE = 0x03
 SOCKS5_ATYP_IPV4 = 0x01
 SOCKS5_ATYP_DOMAIN = 0x03
 SOCKS5_ATYP_IPV6 = 0x04
@@ -70,6 +74,21 @@ class ProxyRequest:
 class SOCKS5ConnectRequest:
     remote_host: str
     remote_port: int
+
+
+@dataclass(frozen=True)
+class SOCKS5Request:
+    command: int
+    remote_host: str
+    remote_port: int
+
+
+@dataclass(frozen=True)
+class SOCKS5UDPDatagram:
+    fragment: int
+    remote_host: str
+    remote_port: int
+    payload: bytes
 
 
 class SOCKS5ProtocolError(ValueError):
@@ -243,41 +262,30 @@ def read_socks5_greeting(connection: socket.socket) -> bytes:
     return methods
 
 
-def parse_socks5_connect_request(payload: bytes) -> SOCKS5ConnectRequest:
-    if len(payload) < 4:
-        raise SOCKS5ProtocolError("truncated SOCKS CONNECT request")
-
-    version, command, reserved, address_type = payload[0], payload[1], payload[2], payload[3]
-    if version != SOCKS_VERSION:
-        raise SOCKS5ProtocolError("unsupported SOCKS version")
-    if reserved != 0:
-        raise SOCKS5ProtocolError("invalid SOCKS reserved byte")
-    if command != SOCKS5_CMD_CONNECT:
-        raise SOCKS5ProtocolError(
-            "unsupported SOCKS command",
-            reply_code=SOCKS5_REPLY_COMMAND_NOT_SUPPORTED,
-        )
-
-    cursor = 4
+def _parse_socks5_address(payload: bytes, cursor: int) -> tuple[str, int, int]:
+    if len(payload) <= cursor:
+        raise SOCKS5ProtocolError("truncated SOCKS request")
+    address_type = payload[cursor]
+    cursor += 1
     if address_type == SOCKS5_ATYP_IPV4:
         if len(payload) < cursor + 4 + 2:
-            raise SOCKS5ProtocolError("truncated IPv4 SOCKS CONNECT request")
+            raise SOCKS5ProtocolError("truncated IPv4 SOCKS request")
         remote_host = socket.inet_ntoa(payload[cursor : cursor + 4])
         cursor += 4
     elif address_type == SOCKS5_ATYP_DOMAIN:
         if len(payload) < cursor + 1:
-            raise SOCKS5ProtocolError("truncated domain SOCKS CONNECT request")
+            raise SOCKS5ProtocolError("truncated domain SOCKS request")
         domain_length = payload[cursor]
         cursor += 1
         if domain_length == 0:
             raise SOCKS5ProtocolError("empty SOCKS domain")
         if len(payload) < cursor + domain_length + 2:
-            raise SOCKS5ProtocolError("truncated domain SOCKS CONNECT request")
+            raise SOCKS5ProtocolError("truncated domain SOCKS request")
         remote_host = payload[cursor : cursor + domain_length].decode("idna")
         cursor += domain_length
     elif address_type == SOCKS5_ATYP_IPV6:
         if len(payload) < cursor + 16 + 2:
-            raise SOCKS5ProtocolError("truncated IPv6 SOCKS CONNECT request")
+            raise SOCKS5ProtocolError("truncated IPv6 SOCKS request")
         remote_host = socket.inet_ntop(socket.AF_INET6, payload[cursor : cursor + 16])
         cursor += 16
     else:
@@ -285,18 +293,45 @@ def parse_socks5_connect_request(payload: bytes) -> SOCKS5ConnectRequest:
             "unsupported SOCKS address type",
             reply_code=SOCKS5_REPLY_ADDRESS_TYPE_NOT_SUPPORTED,
         )
-
     remote_port = int.from_bytes(payload[cursor : cursor + 2], byteorder="big")
-    if remote_port == 0:
-        raise SOCKS5ProtocolError("invalid SOCKS destination port")
     cursor += 2
+    return remote_host, remote_port, cursor
+
+
+def parse_socks5_request(payload: bytes) -> SOCKS5Request:
+    if len(payload) < 4:
+        raise SOCKS5ProtocolError("truncated SOCKS request")
+
+    version, command, reserved = payload[0], payload[1], payload[2]
+    if version != SOCKS_VERSION:
+        raise SOCKS5ProtocolError("unsupported SOCKS version")
+    if reserved != 0:
+        raise SOCKS5ProtocolError("invalid SOCKS reserved byte")
+    if command not in (SOCKS5_CMD_CONNECT, SOCKS5_CMD_UDP_ASSOCIATE):
+        raise SOCKS5ProtocolError(
+            "unsupported SOCKS command",
+            reply_code=SOCKS5_REPLY_COMMAND_NOT_SUPPORTED,
+        )
+
+    remote_host, remote_port, cursor = _parse_socks5_address(payload, 3)
+    if command == SOCKS5_CMD_CONNECT and remote_port == 0:
+        raise SOCKS5ProtocolError("invalid SOCKS destination port")
     if cursor != len(payload):
-        raise SOCKS5ProtocolError("invalid trailing bytes in SOCKS CONNECT request")
+        raise SOCKS5ProtocolError("invalid trailing bytes in SOCKS request")
+    return SOCKS5Request(command=command, remote_host=remote_host, remote_port=remote_port)
 
-    return SOCKS5ConnectRequest(remote_host=remote_host, remote_port=remote_port)
+
+def parse_socks5_connect_request(payload: bytes) -> SOCKS5ConnectRequest:
+    request = parse_socks5_request(payload)
+    if request.command != SOCKS5_CMD_CONNECT:
+        raise SOCKS5ProtocolError(
+            "unsupported SOCKS command",
+            reply_code=SOCKS5_REPLY_COMMAND_NOT_SUPPORTED,
+        )
+    return SOCKS5ConnectRequest(remote_host=request.remote_host, remote_port=request.remote_port)
 
 
-def read_socks5_connect_request(connection: socket.socket) -> SOCKS5ConnectRequest:
+def read_socks5_request(connection: socket.socket) -> SOCKS5Request:
     header = _recv_exact(connection, 4)
     address_type = header[3]
     payload = bytearray(header)
@@ -314,28 +349,68 @@ def read_socks5_connect_request(connection: socket.socket) -> SOCKS5ConnectReque
             reply_code=SOCKS5_REPLY_ADDRESS_TYPE_NOT_SUPPORTED,
         )
     payload.extend(_recv_exact(connection, 2))
-    return parse_socks5_connect_request(bytes(payload))
+    return parse_socks5_request(bytes(payload))
+
+
+def read_socks5_connect_request(connection: socket.socket) -> SOCKS5ConnectRequest:
+    request = read_socks5_request(connection)
+    if request.command != SOCKS5_CMD_CONNECT:
+        raise SOCKS5ProtocolError(
+            "unsupported SOCKS command",
+            reply_code=SOCKS5_REPLY_COMMAND_NOT_SUPPORTED,
+        )
+    return SOCKS5ConnectRequest(remote_host=request.remote_host, remote_port=request.remote_port)
 
 
 def build_socks5_method_selection(method: int) -> bytes:
     return bytes([SOCKS_VERSION, method])
 
 
-def build_socks5_reply(reply_code: int) -> bytes:
-    return bytes(
-        [
-            SOCKS_VERSION,
-            reply_code,
-            0x00,
-            SOCKS5_ATYP_IPV4,
-            0x00,
-            0x00,
-            0x00,
-            0x00,
-            0x00,
-            0x00,
-        ]
+def _encode_socks5_address(remote_host: str, remote_port: int) -> bytes:
+    if not (0 <= remote_port <= 65535):
+        raise SOCKS5ProtocolError("invalid SOCKS destination port")
+    try:
+        ip_addr = ipaddress.ip_address(remote_host)
+    except ValueError:
+        host_bytes = remote_host.encode("idna")
+        if not host_bytes:
+            raise SOCKS5ProtocolError("empty SOCKS domain")
+        if len(host_bytes) > 255:
+            raise SOCKS5ProtocolError("SOCKS domain too long")
+        return bytes([SOCKS5_ATYP_DOMAIN, len(host_bytes)]) + host_bytes + remote_port.to_bytes(2, "big")
+    if isinstance(ip_addr, ipaddress.IPv4Address):
+        return bytes([SOCKS5_ATYP_IPV4]) + ip_addr.packed + remote_port.to_bytes(2, "big")
+    return bytes([SOCKS5_ATYP_IPV6]) + ip_addr.packed + remote_port.to_bytes(2, "big")
+
+
+def build_socks5_reply(reply_code: int, *, bind_host: str = "0.0.0.0", bind_port: int = 0) -> bytes:
+    return bytes([SOCKS_VERSION, reply_code, 0x00]) + _encode_socks5_address(bind_host, bind_port)
+
+
+def parse_socks5_udp_datagram(payload: bytes) -> SOCKS5UDPDatagram:
+    if len(payload) < 4:
+        raise SOCKS5ProtocolError("truncated SOCKS5 UDP datagram")
+    if payload[0] != 0 or payload[1] != 0:
+        raise SOCKS5ProtocolError("invalid SOCKS5 UDP reserved bytes")
+    fragment = payload[2]
+    remote_host, remote_port, cursor = _parse_socks5_address(payload, 3)
+    return SOCKS5UDPDatagram(
+        fragment=fragment,
+        remote_host=remote_host,
+        remote_port=remote_port,
+        payload=payload[cursor:],
     )
+
+
+def build_socks5_udp_datagram(remote_host: str, remote_port: int, payload: bytes) -> bytes:
+    return b"\x00\x00\x00" + _encode_socks5_address(remote_host, remote_port) + payload
+
+
+def _is_unspecified_address(host: str) -> bool:
+    try:
+        return ipaddress.ip_address(host).is_unspecified
+    except ValueError:
+        return True
 
 
 def _send_http_error(
@@ -495,13 +570,13 @@ class Client:
             LOGGER.warning("HELLO ack was not confirmed by retransmit state in time")
         return self.session_id
 
-    def open_stream(self, remote_host: str, remote_port: int) -> int:
+    def _open(self, msg_type: MessageType, payload: bytes) -> int:
         with self._open_lock:
             self.reliable.send_reliable(
-                msg_type=MessageType.OPEN_STREAM,
+                msg_type=msg_type,
                 session_id=self.session_id,
                 stream_id=0,
-                payload=OpenStream(remote_host=remote_host, remote_port=remote_port).encode(),
+                payload=payload,
             )
             frame = self.reliable.wait_for_frame(
                 lambda f: f.msg_type in (MessageType.OPEN_OK, MessageType.OPEN_ERR),
@@ -514,6 +589,15 @@ class Client:
             raise RuntimeError(f"open stream failed: {open_err.error_code} {open_err.reason}")
         open_ok = OpenOk.decode(frame.payload)
         return open_ok.assigned_stream_id
+
+    def open_stream(self, remote_host: str, remote_port: int) -> int:
+        return self._open(
+            MessageType.OPEN_STREAM,
+            OpenStream(remote_host=remote_host, remote_port=remote_port).encode(),
+        )
+
+    def open_datagram(self) -> int:
+        return self._open(MessageType.OPEN_DATAGRAM, OpenDatagram().encode())
 
     def recv_stream_chunk(
         self, stream_id: int, timeout_s: float = 2.0
@@ -540,6 +624,22 @@ class Client:
                 payload=Data(payload=chunk).encode(),
             )
 
+    def send_datagram(self, stream_id: int, remote_host: str, remote_port: int, payload: bytes) -> None:
+        encoded = DatagramPacket(
+            remote_host=remote_host,
+            remote_port=remote_port,
+            payload=payload,
+        ).encode()
+        mtu_payload = max(1, self.config.session.mtu_payload)
+        if len(encoded) > mtu_payload:
+            raise ValueError("datagram exceeds session mtu_payload")
+        self.reliable.send_reliable(
+            msg_type=MessageType.DATA,
+            session_id=self.session_id,
+            stream_id=stream_id,
+            payload=Data(payload=encoded).encode(),
+        )
+
     def recv_stream_data(self, stream_id: int, timeout_s: float = 2.0) -> bytes:
         parts: list[bytes] = []
         while True:
@@ -550,6 +650,19 @@ class Client:
                 break
             parts.append(chunk)
         return b"".join(parts)
+
+    def recv_datagram(self, stream_id: int, timeout_s: float = 2.0) -> tuple[DatagramPacket | None, bool]:
+        frame = self.reliable.wait_for_frame(
+            lambda f: f.stream_id == stream_id
+            and f.msg_type in (MessageType.DATA, MessageType.CLOSE, MessageType.CLOSE_ACK),
+            timeout_s=timeout_s,
+        )
+        if frame is None:
+            return None, False
+        if frame.msg_type in (MessageType.CLOSE, MessageType.CLOSE_ACK):
+            return None, True
+        payload = Data.decode(frame.payload).payload
+        return DatagramPacket.decode(payload), False
 
     def close_stream(self, stream_id: int) -> None:
         close_seq = self.reliable.send_reliable(
@@ -680,6 +793,102 @@ class SOCKS5ProxyServer:
                     daemon=True,
                 ).start()
 
+    def _relay_udp_associate(
+        self,
+        connection: socket.socket,
+        udp_socket: socket.socket,
+        stream_id: int,
+        request: SOCKS5Request,
+    ) -> None:
+        stop_event = Event()
+        relay_error: list[Exception] = []
+        expected_client_addr: tuple[str, int] | None = None
+        if request.remote_port != 0 and not _is_unspecified_address(request.remote_host):
+            expected_client_addr = (request.remote_host, request.remote_port)
+
+        def _udp_to_tunnel() -> None:
+            nonlocal expected_client_addr
+            try:
+                while not stop_event.is_set():
+                    try:
+                        payload, sender = udp_socket.recvfrom(65535)
+                    except socket.timeout:
+                        continue
+                    sender_addr = (sender[0], sender[1])
+                    if expected_client_addr is None:
+                        expected_client_addr = sender_addr
+                    elif sender_addr != expected_client_addr:
+                        continue
+                    try:
+                        datagram = parse_socks5_udp_datagram(payload)
+                    except SOCKS5ProtocolError:
+                        continue
+                    if datagram.fragment != 0:
+                        continue
+                    self.client.send_datagram(
+                        stream_id=stream_id,
+                        remote_host=datagram.remote_host,
+                        remote_port=datagram.remote_port,
+                        payload=datagram.payload,
+                    )
+            except Exception as exc:
+                relay_error.append(exc)
+            finally:
+                stop_event.set()
+
+        def _tunnel_to_udp() -> None:
+            while not stop_event.is_set():
+                try:
+                    packet, closed = self.client.recv_datagram(
+                        stream_id=stream_id,
+                        timeout_s=PROXY_SOCKET_POLL_TIMEOUT_S,
+                    )
+                except ValueError:
+                    continue
+                except Exception as exc:
+                    relay_error.append(exc)
+                    stop_event.set()
+                    break
+                if packet is None:
+                    continue
+                if closed:
+                    stop_event.set()
+                    break
+                if expected_client_addr is None:
+                    continue
+                response = build_socks5_udp_datagram(
+                    remote_host=packet.remote_host,
+                    remote_port=packet.remote_port,
+                    payload=packet.payload,
+                )
+                try:
+                    udp_socket.sendto(response, expected_client_addr)
+                except OSError:
+                    continue
+
+        upload_thread = Thread(target=_udp_to_tunnel, daemon=True)
+        download_thread = Thread(target=_tunnel_to_udp, daemon=True)
+        upload_thread.start()
+        download_thread.start()
+        try:
+            while not stop_event.is_set():
+                try:
+                    chunk = connection.recv(1)
+                except socket.timeout:
+                    continue
+                if not chunk:
+                    break
+        finally:
+            stop_event.set()
+            upload_thread.join(timeout=1.0)
+            download_thread.join(timeout=1.0)
+
+        if relay_error:
+            error = relay_error[0]
+            if isinstance(error, (TimeoutError, RuntimeError, OSError)):
+                raise error
+            raise RuntimeError("udp associate relay failed") from error
+
     def _handle_connection(self, connection: socket.socket, address: tuple[str, int]) -> None:
         stream_id: int | None = None
         with connection:
@@ -691,11 +900,33 @@ class SOCKS5ProxyServer:
                     return
                 connection.sendall(build_socks5_method_selection(SOCKS5_METHOD_NO_AUTH))
 
-                request = read_socks5_connect_request(connection)
-                stream_id = self.client.open_stream(request.remote_host, request.remote_port)
-                connection.sendall(build_socks5_reply(SOCKS5_REPLY_SUCCEEDED))
-                connection.settimeout(PROXY_SOCKET_POLL_TIMEOUT_S)
-                _relay_stream(self.client, connection, stream_id, b"")
+                request = read_socks5_request(connection)
+                if request.command == SOCKS5_CMD_CONNECT:
+                    stream_id = self.client.open_stream(request.remote_host, request.remote_port)
+                    connection.sendall(build_socks5_reply(SOCKS5_REPLY_SUCCEEDED))
+                    connection.settimeout(PROXY_SOCKET_POLL_TIMEOUT_S)
+                    _relay_stream(self.client, connection, stream_id, b"")
+                elif request.command == SOCKS5_CMD_UDP_ASSOCIATE:
+                    stream_id = self.client.open_datagram()
+                    udp_bind_host = connection.getsockname()[0]
+                    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as udp_socket:
+                        udp_socket.bind((udp_bind_host, 0))
+                        bind_host, bind_port = udp_socket.getsockname()
+                        connection.sendall(
+                            build_socks5_reply(
+                                SOCKS5_REPLY_SUCCEEDED,
+                                bind_host=bind_host,
+                                bind_port=bind_port,
+                            )
+                        )
+                        connection.settimeout(PROXY_SOCKET_POLL_TIMEOUT_S)
+                        udp_socket.settimeout(PROXY_SOCKET_POLL_TIMEOUT_S)
+                        self._relay_udp_associate(connection, udp_socket, stream_id, request)
+                else:
+                    raise SOCKS5ProtocolError(
+                        "unsupported SOCKS command",
+                        reply_code=SOCKS5_REPLY_COMMAND_NOT_SUPPORTED,
+                    )
             except SOCKS5ProtocolError as exc:
                 LOGGER.warning(
                     "invalid SOCKS5 request from %s:%d: %s",
