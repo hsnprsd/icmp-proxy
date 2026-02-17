@@ -14,16 +14,18 @@ class FakeRawSocket:
         self._inbound: queue.Queue[bytes | None] = queue.Queue()
         self._send_lock = threading.Lock()
         self.sent_packets: list[bytes] = []
+        self.sent_addrs: list[tuple[str, int]] = []
         self.closed = False
 
     def settimeout(self, timeout: float) -> None:
         self.timeout = timeout
 
-    def sendto(self, data: bytes, _addr: tuple[str, int]) -> None:
+    def sendto(self, data: bytes, addr: tuple[str, int]) -> None:
         with self._send_lock:
             self.sent_packets.append(data)
+            self.sent_addrs.append(addr)
 
-    def recv(self, _size: int) -> bytes:
+    def recvfrom(self, _size: int) -> tuple[bytes, tuple[str, int]]:
         if self.closed:
             raise OSError("socket closed")
         try:
@@ -32,7 +34,7 @@ class FakeRawSocket:
             raise socket.timeout() from exc
         if packet is None:
             raise OSError("socket closed")
-        return packet
+        return packet, ("127.0.0.1", 0)
 
     def inject_packet(self, packet: bytes) -> None:
         self._inbound.put(packet)
@@ -96,7 +98,7 @@ def test_send_reliable_ack_clears_pending() -> None:
             ack_num=seq_num,
         )
         fake.inject_packet(_wrap_frame_for_recv(ack_frame))
-        assert session.wait_for_ack(stream_id=7, seq_num=seq_num, timeout_s=1.0)
+        assert session.wait_for_ack(session_id=1, stream_id=7, seq_num=seq_num, timeout_s=1.0)
     finally:
         session.stop()
         fake.close()
@@ -104,10 +106,10 @@ def test_send_reliable_ack_clears_pending() -> None:
 
 def test_retransmit_and_retry_exhaustion_callback() -> None:
     fake = FakeRawSocket()
-    exhausted: list[tuple[int, MessageType]] = []
+    exhausted: list[tuple[int, int, MessageType]] = []
 
-    def on_retry_exhausted(stream_id: int, msg_type: MessageType) -> None:
-        exhausted.append((stream_id, msg_type))
+    def on_retry_exhausted(session_id: int, stream_id: int, msg_type: MessageType) -> None:
+        exhausted.append((session_id, stream_id, msg_type))
 
     session = _new_session(
         fake,
@@ -126,8 +128,8 @@ def test_retransmit_and_retry_exhaustion_callback() -> None:
         )
         assert _wait_until(lambda: len(fake.sent_packets) >= 2, timeout_s=1.0)
         assert _wait_until(lambda: exhausted, timeout_s=1.0)
-        assert exhausted == [(42, MessageType.DATA)]
-        assert (42, seq_num) not in session._pending
+        assert exhausted == [(2, 42, MessageType.DATA)]
+        assert (2, 42, seq_num) not in session._pending
     finally:
         session.stop()
         fake.close()
@@ -218,7 +220,7 @@ def test_flowcontrol_increases_window_when_stream_is_saturated() -> None:
             payload=b"a",
         )
         assert _wait_until(
-            lambda: session._stream_windows.get(17, 0) >= 3,  # pylint: disable=protected-access
+            lambda: session._stream_windows.get((7, 17), 0) >= 3,  # pylint: disable=protected-access
             timeout_s=0.8,
         )
     finally:
@@ -244,7 +246,7 @@ def test_flowcontrol_decreases_window_when_retries_spike() -> None:
     session.start()
     try:
         with session._state_lock:  # pylint: disable=protected-access
-            session._stream_windows[23] = 12  # pylint: disable=protected-access
+            session._stream_windows[(9, 23)] = 12  # pylint: disable=protected-access
         session.send_reliable(
             msg_type=MessageType.DATA,
             session_id=9,
@@ -252,7 +254,7 @@ def test_flowcontrol_decreases_window_when_retries_spike() -> None:
             payload=b"b",
         )
         assert _wait_until(
-            lambda: session._stream_windows.get(23, 12) <= 6,  # pylint: disable=protected-access
+            lambda: session._stream_windows.get((9, 23), 12) <= 6,  # pylint: disable=protected-access
             timeout_s=1.0,
         )
     finally:
@@ -316,6 +318,61 @@ def test_global_inflight_cap_blocks_until_ack() -> None:
         fake.inject_packet(_wrap_frame_for_recv(ack_frame))
         assert done.wait(timeout=1.0)
         assert not failure
+    finally:
+        session.stop()
+        fake.close()
+
+
+def test_ack_isolated_by_session_id() -> None:
+    fake = FakeRawSocket()
+    session = _new_session(fake)
+    session.start()
+    try:
+        seq_num = session.send_reliable(
+            msg_type=MessageType.DATA,
+            session_id=101,
+            stream_id=7,
+            payload=b"abc",
+        )
+        wrong_ack = Frame.make(
+            msg_type=MessageType.KEEPALIVE,
+            payload=b"",
+            session_id=102,
+            stream_id=7,
+            ack_num=seq_num,
+        )
+        fake.inject_packet(_wrap_frame_for_recv(wrong_ack))
+        time.sleep(0.05)
+        assert (101, 7, seq_num) in session._pending  # pylint: disable=protected-access
+
+        correct_ack = Frame.make(
+            msg_type=MessageType.KEEPALIVE,
+            payload=b"",
+            session_id=101,
+            stream_id=7,
+            ack_num=seq_num,
+        )
+        fake.inject_packet(_wrap_frame_for_recv(correct_ack))
+        assert session.wait_for_ack(session_id=101, stream_id=7, seq_num=seq_num, timeout_s=1.0)
+    finally:
+        session.stop()
+        fake.close()
+
+
+def test_send_untracked_remote_host_override() -> None:
+    fake = FakeRawSocket()
+    session = _new_session(fake)
+    session.start()
+    try:
+        session.send_untracked(
+            msg_type=MessageType.KEEPALIVE,
+            session_id=1,
+            stream_id=0,
+            payload=b"",
+            remote_host="10.10.10.10",
+        )
+        assert _wait_until(lambda: len(fake.sent_packets) == 1)
+        assert fake.sent_addrs[0][0] == "10.10.10.10"
     finally:
         session.stop()
         fake.close()

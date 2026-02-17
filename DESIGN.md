@@ -109,9 +109,10 @@ Maximum frame payload is `65535` bytes (`MAX_PAYLOAD_LEN`), but practical data c
 - Client validates timestamp and signature, then adopts returned `session_id`.
 
 ### Session behavior
-- Server keeps one active authenticated session (`active_session_id`) at a time.
-- If a new handshake establishes a different session, existing server stream state is dropped and sockets are closed.
+- Server supports multiple authenticated sessions concurrently.
+- Session IDs are bound to the source host observed during handshake.
 - Server caches recent successful HELLO nonces to re-send the same `HELLO_ACK` for retransmitted HELLO frames within replay TTL.
+- Idle authenticated sessions are evicted after `session_idle_timeout_ms`.
 
 ## Reliable Transport Behavior (`ReliableICMPSession`)
 
@@ -124,7 +125,7 @@ Maximum frame payload is `65535` bytes (`MAX_PAYLOAD_LEN`), but practical data c
 ### Retransmission
 - Pending reliable frames are scanned every `retx_scan_interval_ms`.
 - If not ACKed by `retx_timeout_ms`, frame is resent.
-- After `retx_max_retries`, frame is dropped and optional `on_retry_exhausted(stream_id, msg_type)` callback fires.
+- After `retx_max_retries`, frame is dropped and optional `on_retry_exhausted(session_id, stream_id, msg_type)` callback fires.
 
 ### Inflight control
 - Limits:
@@ -169,7 +170,6 @@ When enabled (`flowcontrol_enable`), transport adjusts stream window sizes using
 - On `OPEN_STREAM`, server opens outbound TCP connection with `target_connect_timeout_ms`.
 - On success, server creates a tunnel stream ID, sends `OPEN_OK`, and starts relay thread.
 - On upstream connect failure, returns `OPEN_ERR` (`503 upstream connect failed`).
-- Server enforces `max_streams`; excess opens return `OPEN_ERR` (`429 too many streams`).
 
 ### Datagram streams
 - On `OPEN_DATAGRAM`, server creates datagram stream state and relay thread.
@@ -195,6 +195,7 @@ When enabled (`flowcontrol_enable`), transport adjusts stream window sizes using
 - Endpoints/listeners:
   - server: `ICMP_PROXY_BIND_HOST`, `ICMP_PROXY_CLIENT_HOST`
   - client: `ICMP_PROXY_REMOTE_HOST`, HTTP/SOCKS bind vars
+- Session lifecycle: `ICMP_PROXY_SESSION_IDLE_TIMEOUT_MS`
 
 ## Operational Notes
 - Entry points:
@@ -213,19 +214,15 @@ When enabled (`flowcontrol_enable`), transport adjusts stream window sizes using
 
 ## Known Limitations
 - Compatibility is intentionally unstable during active development.
-- Single active authenticated session on server; new session can evict prior stream state.
 - No implemented use of `FLAG_FRAGMENTED`; oversized tunnel payloads are dropped or must be pre-chunked by sender.
 - SOCKS5 UDP fragmentation unsupported (`FRAG=0` only).
 - TCP upstream dial path is IPv4 socket based (`AF_INET`), while datagram path supports IPv4/IPv6 via `getaddrinfo`.
-- `stream_idle_timeout_ms` is configurable but currently not enforced in relay loops.
 - ICMP may be filtered, rate-limited, or deprioritized by networks/middleboxes.
 
 ## Future Work (Potential)
 - Per-frame authenticated encryption for confidentiality/integrity.
-- Multi-session support on server with explicit session lifecycle policy.
 - Full fragmentation/reassembly support.
 - Stronger observability and exported metrics endpoints.
-- Explicit idle-timeout enforcement and improved backpressure semantics.
 
 ## Glossary
 - Session: authenticated client-server tunnel identified by `session_id`.

@@ -35,9 +35,8 @@ _ENV_TO_INI_KEY: dict[str, tuple[str, str]] = {
     "ICMP_PROXY_PERFORMANCE_METRICS_ENABLE": ("session", "performance_metrics_enable"),
     "ICMP_PROXY_BIND_HOST": ("server", "bind_host"),
     "ICMP_PROXY_CLIENT_HOST": ("server", "client_host"),
-    "ICMP_PROXY_MAX_STREAMS": ("server", "max_streams"),
     "ICMP_PROXY_TARGET_CONNECT_TIMEOUT_MS": ("server", "target_connect_timeout_ms"),
-    "ICMP_PROXY_STREAM_IDLE_TIMEOUT_MS": ("server", "stream_idle_timeout_ms"),
+    "ICMP_PROXY_SESSION_IDLE_TIMEOUT_MS": ("server", "session_idle_timeout_ms"),
     # Client uses ICMP_PROXY_REMOTE_HOST in env but server_host in INI.
     "ICMP_PROXY_REMOTE_HOST": ("client", "server_host"),
     "ICMP_PROXY_HTTP_PROXY_BIND_HOST": ("client", "http_proxy_bind_host"),
@@ -180,9 +179,8 @@ class CommonConfig:
 class ServerConfig:
     bind_host: str
     client_host: str
-    max_streams: int
     target_connect_timeout_ms: int
-    stream_idle_timeout_ms: int
+    session_idle_timeout_ms: int
     common: CommonConfig
     session: SessionConfig
 
@@ -266,9 +264,8 @@ def load_server_config() -> ServerConfig:
     return ServerConfig(
         bind_host=resolver.env_str("ICMP_PROXY_BIND_HOST", "0.0.0.0"),
         client_host=resolver.env_str("ICMP_PROXY_CLIENT_HOST", "127.0.0.1"),
-        max_streams=resolver.env_int("ICMP_PROXY_MAX_STREAMS", 512),
         target_connect_timeout_ms=resolver.env_int("ICMP_PROXY_TARGET_CONNECT_TIMEOUT_MS", 3000),
-        stream_idle_timeout_ms=resolver.env_int("ICMP_PROXY_STREAM_IDLE_TIMEOUT_MS", 60_000),
+        session_idle_timeout_ms=resolver.env_int("ICMP_PROXY_SESSION_IDLE_TIMEOUT_MS", 60_000),
         common=_load_common_config(resolver),
         session=_load_session_config(resolver),
     )

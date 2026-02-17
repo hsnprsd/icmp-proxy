@@ -566,7 +566,12 @@ class Client:
         if not verify_signature(expected_sig, hello_ack.hmac_sha256):
             raise ValueError("HELLO_ACK signature verification failed")
         self.session_id = frame.session_id
-        if not self.reliable.wait_for_ack(stream_id=0, seq_num=hello_seq, timeout_s=1.0):
+        if not self.reliable.wait_for_ack(
+            session_id=0,
+            stream_id=0,
+            seq_num=hello_seq,
+            timeout_s=1.0,
+        ):
             LOGGER.warning("HELLO ack was not confirmed by retransmit state in time")
         return self.session_id
 
@@ -677,8 +682,13 @@ class Client:
         )
         if frame is not None:
             CloseAck.decode(frame.payload)
-        self.reliable.wait_for_ack(stream_id=stream_id, seq_num=close_seq, timeout_s=1.0)
-        self.reliable.clear_stream_state(stream_id)
+        self.reliable.wait_for_ack(
+            session_id=self.session_id,
+            stream_id=stream_id,
+            seq_num=close_seq,
+            timeout_s=1.0,
+        )
+        self.reliable.clear_stream_state(self.session_id, stream_id)
 
 
 class HTTPProxyServer:
@@ -768,7 +778,7 @@ class HTTPProxyServer:
                     try:
                         self.client.close_stream(stream_id)
                     except Exception:
-                        self.client.reliable.clear_stream_state(stream_id)
+                        self.client.reliable.clear_stream_state(self.client.session_id, stream_id)
 
 
 class SOCKS5ProxyServer:
@@ -967,7 +977,7 @@ class SOCKS5ProxyServer:
                     try:
                         self.client.close_stream(stream_id)
                     except Exception:
-                        self.client.reliable.clear_stream_state(stream_id)
+                        self.client.reliable.clear_stream_state(self.client.session_id, stream_id)
 
 
 def _run_proxy_servers(client: Client, config: ClientConfig) -> None:

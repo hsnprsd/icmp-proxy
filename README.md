@@ -43,7 +43,7 @@ mtu_payload = 1200
 [server]
 bind_host = 0.0.0.0
 client_host = 127.0.0.1
-max_streams = 512
+session_idle_timeout_ms = 60000
 
 [client]
 server_host = 127.0.0.1
@@ -67,7 +67,7 @@ Supported environment variables:
 - `ICMP_PROXY_SOCKS_PROXY_BIND_PORT` (client-side SOCKS5 proxy listen port, default: `1080`)
 - `ICMP_PROXY_BIND_HOST` (server-side, default: `0.0.0.0`)
 - `ICMP_PROXY_CLIENT_HOST` (server-side destination for replies, default: `127.0.0.1`)
-- `ICMP_PROXY_MAX_STREAMS` (default: `512`)
+- `ICMP_PROXY_SESSION_IDLE_TIMEOUT_MS` (server-side authenticated session idle timeout, default: `60000`)
 - `ICMP_PROXY_MAX_INFLIGHT_PER_STREAM` (default: `1024`)
 - `ICMP_PROXY_MIN_INFLIGHT_PER_STREAM` (default: `32`)
 - `ICMP_PROXY_MAX_GLOBAL_INFLIGHT` (default: `2048`)

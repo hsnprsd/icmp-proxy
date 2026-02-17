@@ -6,7 +6,29 @@ from icmp_proxy.server import Server
 
 class FakeReliable:
     def __init__(self) -> None:
-        self.sent: list[dict[str, int | bytes | MessageType]] = []
+        self.sent: list[dict[str, int | bytes | str | None | MessageType]] = []
+
+    def send_reliable(
+        self,
+        *,
+        msg_type: MessageType,
+        session_id: int,
+        stream_id: int,
+        payload: bytes,
+        flags: int = 0,
+        remote_host: str | None = None,
+    ) -> int:
+        self.sent.append(
+            {
+                "msg_type": msg_type,
+                "session_id": session_id,
+                "stream_id": stream_id,
+                "payload": payload,
+                "flags": flags,
+                "remote_host": remote_host,
+            }
+        )
+        return 1
 
     def send_untracked(
         self,
@@ -17,7 +39,9 @@ class FakeReliable:
         payload: bytes,
         ack_num: int = 0,
         flags: int = 0,
+        remote_host: str | None = None,
     ) -> None:
+        _ = remote_host
         self.sent.append(
             {
                 "msg_type": msg_type,
@@ -26,20 +50,20 @@ class FakeReliable:
                 "payload": payload,
                 "ack_num": ack_num,
                 "flags": flags,
+                "remote_host": remote_host,
             }
         )
 
-    def clear_stream_state(self, stream_id: int) -> None:  # pragma: no cover - no-op in this test
-        _ = stream_id
+    def clear_stream_state(self, session_id: int, stream_id: int) -> None:  # pragma: no cover - no-op in this test
+        _ = (session_id, stream_id)
 
 
 def _server_config() -> ServerConfig:
     return ServerConfig(
         bind_host="0.0.0.0",
         client_host="127.0.0.1",
-        max_streams=32,
         target_connect_timeout_ms=1000,
-        stream_idle_timeout_ms=30_000,
+        session_idle_timeout_ms=30_000,
         common=CommonConfig(
             log_level="WARNING",
             psk="test-secret",
@@ -91,8 +115,8 @@ def test_process_hello_duplicate_nonce_resends_same_session() -> None:
         seq_num=12,
     )
 
-    server.process_hello(frame1)
-    server.process_hello(frame2)
+    server.process_hello(frame1, "127.0.0.1")
+    server.process_hello(frame2, "127.0.0.1")
 
     assert len(server.reliable.sent) == 2  # type: ignore[attr-defined]
     first = server.reliable.sent[0]  # type: ignore[attr-defined]
@@ -100,3 +124,78 @@ def test_process_hello_duplicate_nonce_resends_same_session() -> None:
     assert first["msg_type"] == MessageType.HELLO_ACK
     assert second["msg_type"] == MessageType.HELLO_ACK
     assert first["session_id"] == second["session_id"]
+
+
+def test_process_hello_allows_multiple_active_sessions() -> None:
+    server = Server(_server_config())
+    server.reliable = FakeReliable()  # type: ignore[assignment]
+
+    timestamp_ms = now_ms()
+    hello1 = Hello(
+        client_id="test-client",
+        nonce=b"a" * 16,
+        timestamp_ms=timestamp_ms,
+        hmac_sha256=sign_client_hello(
+            psk=b"test-secret",
+            client_id="test-client",
+            nonce=b"a" * 16,
+            timestamp_ms=timestamp_ms,
+        ),
+    )
+    hello2 = Hello(
+        client_id="test-client",
+        nonce=b"b" * 16,
+        timestamp_ms=timestamp_ms,
+        hmac_sha256=sign_client_hello(
+            psk=b"test-secret",
+            client_id="test-client",
+            nonce=b"b" * 16,
+            timestamp_ms=timestamp_ms,
+        ),
+    )
+    frame1 = Frame.make(msg_type=MessageType.HELLO, payload=hello1.encode(), session_id=0, stream_id=0, seq_num=1)
+    frame2 = Frame.make(msg_type=MessageType.HELLO, payload=hello2.encode(), session_id=0, stream_id=0, seq_num=2)
+
+    server.process_hello(frame1, "10.0.0.1")
+    server.process_hello(frame2, "10.0.0.2")
+
+    assert len(server.sessions) == 2
+    ack1 = server.reliable.sent[0]  # type: ignore[attr-defined]
+    ack2 = server.reliable.sent[1]  # type: ignore[attr-defined]
+    assert ack1["session_id"] != ack2["session_id"]
+    assert server.sessions[ack1["session_id"]].remote_host == "10.0.0.1"  # type: ignore[index]
+    assert server.sessions[ack2["session_id"]].remote_host == "10.0.0.2"  # type: ignore[index]
+
+
+def test_process_frame_rejects_mismatched_source_host() -> None:
+    server = Server(_server_config())
+    server.reliable = FakeReliable()  # type: ignore[assignment]
+
+    timestamp_ms = now_ms()
+    hello = Hello(
+        client_id="test-client",
+        nonce=b"z" * 16,
+        timestamp_ms=timestamp_ms,
+        hmac_sha256=sign_client_hello(
+            psk=b"test-secret",
+            client_id="test-client",
+            nonce=b"z" * 16,
+            timestamp_ms=timestamp_ms,
+        ),
+    )
+    hello_frame = Frame.make(msg_type=MessageType.HELLO, payload=hello.encode(), session_id=0, stream_id=0, seq_num=7)
+    server.process_hello(hello_frame, "10.1.1.1")
+
+    session_id = int(server.reliable.sent[0]["session_id"])  # type: ignore[attr-defined]
+    before = len(server.reliable.sent)  # type: ignore[attr-defined]
+
+    open_datagram_frame = Frame.make(
+        msg_type=MessageType.OPEN_DATAGRAM,
+        payload=b"",
+        session_id=session_id,
+        stream_id=0,
+        seq_num=9,
+    )
+    server.process_frame(open_datagram_frame, "10.1.1.2")
+
+    assert len(server.reliable.sent) == before  # type: ignore[attr-defined]

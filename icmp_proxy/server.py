@@ -6,7 +6,7 @@ import os
 import select
 import socket
 import time
-from threading import Lock, Thread
+from threading import Event, Lock, Thread
 
 from .auth import (
     ReplayCache,
@@ -50,6 +50,14 @@ class DatagramStreamState:
     sockets_lock: Lock = field(default_factory=Lock)
 
 
+@dataclass
+class SessionState:
+    remote_host: str
+    client_nonce: bytes
+    last_activity_ms: int
+    stream_ids: set[int] = field(default_factory=set)
+
+
 def configure_logging(level_name: str) -> None:
     level = getattr(logging, level_name.upper(), logging.INFO)
     logging.basicConfig(
@@ -61,7 +69,8 @@ def configure_logging(level_name: str) -> None:
 class Server:
     def __init__(self, config: ServerConfig) -> None:
         self.config = config
-        self.outbound_streams: dict[int, TCPStreamState | DatagramStreamState] = {}
+        self.outbound_streams: dict[tuple[int, int], TCPStreamState | DatagramStreamState] = {}
+        self.sessions: dict[int, SessionState] = {}
         self.connection_lock = Lock()
         self.psk = load_psk(config.common.psk)
         if config.common.psk.strip() == DEFAULT_PSK:
@@ -72,9 +81,9 @@ class Server:
             ttl_ms=config.common.auth_replay_ttl_ms,
             max_entries=config.common.auth_replay_max_entries,
         )
-        self.hello_cache: dict[bytes, tuple[int, HelloAck, int]] = {}
-        self.active_session_id: int | None = None
-        self.client_nonce: bytes | None = None
+        self.hello_cache: dict[bytes, tuple[int, HelloAck, int, str]] = {}
+        self._reaper_stop_event = Event()
+        self._reaper_thread: Thread | None = None
 
     def __enter__(self) -> "Server":
         LOGGER.info("starting server")
@@ -107,34 +116,51 @@ class Server:
             on_retry_exhausted=self.on_retry_exhausted,
         )
         self.reliable.start()
+        self._reaper_stop_event.clear()
+        self._reaper_thread = Thread(target=self._session_reaper_loop, daemon=True, name="session-reaper")
+        self._reaper_thread.start()
         return self
 
     def __exit__(self, exc_type, exc_value, traceback) -> None:
         LOGGER.info("stopping server")
+        self._reaper_stop_event.set()
+        if self._reaper_thread is not None:
+            self._reaper_thread.join(timeout=1.0)
         self.reliable.stop()
         with self.connection_lock:
-            streams = list(self.outbound_streams.values())
+            stream_items = list(self.outbound_streams.items())
             self.outbound_streams.clear()
-        for stream in streams:
+            self.sessions.clear()
+        for stream_key, stream in stream_items:
             self._close_stream_state(stream)
+            self.reliable.clear_stream_state(stream_key[0], stream_key[1])
         self.socket.close()
         LOGGER.info("server stopped")
 
     def __call__(self) -> None:
         self.reliable.wait()
 
-    def _allocate_stream_id(self) -> int:
+    def _allocate_session_id(self) -> int:
+        while True:
+            session_id = int.from_bytes(os.urandom(4), byteorder="big")
+            if session_id == 0:
+                continue
+            with self.connection_lock:
+                if session_id not in self.sessions:
+                    return session_id
+
+    def _allocate_stream_id(self, session_id: int) -> int:
         while True:
             stream_id = int.from_bytes(os.urandom(4), byteorder="big")
             if stream_id == 0:
                 continue
             with self.connection_lock:
-                if stream_id not in self.outbound_streams:
+                if (session_id, stream_id) not in self.outbound_streams:
                     return stream_id
 
-    def _stream_exists(self, stream_id: int) -> bool:
+    def _stream_exists(self, session_id: int, stream_id: int) -> bool:
         with self.connection_lock:
-            return stream_id in self.outbound_streams
+            return (session_id, stream_id) in self.outbound_streams
 
     def _close_stream_state(self, stream: TCPStreamState | DatagramStreamState) -> None:
         if isinstance(stream, TCPStreamState):
@@ -146,23 +172,73 @@ class Server:
         for udp_socket in sockets:
             udp_socket.close()
 
-    def _close_stream(self, stream_id: int) -> None:
+    def _session_remote_host(self, session_id: int) -> str | None:
         with self.connection_lock:
-            stream = self.outbound_streams.pop(stream_id, None)
+            session = self.sessions.get(session_id)
+            if session is None:
+                return None
+            return session.remote_host
+
+    def _touch_session(self, session_id: int) -> None:
+        with self.connection_lock:
+            session = self.sessions.get(session_id)
+            if session is not None:
+                session.last_activity_ms = now_ms()
+
+    def _close_stream(self, session_id: int, stream_id: int, *, clear_transport: bool = True) -> None:
+        with self.connection_lock:
+            stream = self.outbound_streams.pop((session_id, stream_id), None)
+            session = self.sessions.get(session_id)
+            if session is not None:
+                session.stream_ids.discard(stream_id)
         if stream is not None:
             self._close_stream_state(stream)
+        if clear_transport:
+            self.reliable.clear_stream_state(session_id, stream_id)
+
+    def _close_session(self, session_id: int) -> None:
+        with self.connection_lock:
+            session = self.sessions.pop(session_id, None)
+            if session is None:
+                return
+            stream_ids = list(session.stream_ids)
+            streams: list[tuple[int, TCPStreamState | DatagramStreamState]] = []
+            for stream_id in stream_ids:
+                stream = self.outbound_streams.pop((session_id, stream_id), None)
+                if stream is not None:
+                    streams.append((stream_id, stream))
+        for stream_id, stream in streams:
+            self._close_stream_state(stream)
+            self.reliable.clear_stream_state(session_id, stream_id)
+
+    def _session_reaper_loop(self) -> None:
+        poll_interval_s = min(1.0, max(0.1, self.config.session_idle_timeout_ms / 2000.0))
+        while not self._reaper_stop_event.wait(poll_interval_s):
+            now_timestamp_ms = now_ms()
+            expired_session_ids: list[int] = []
+            with self.connection_lock:
+                for session_id, session in self.sessions.items():
+                    if now_timestamp_ms - session.last_activity_ms > self.config.session_idle_timeout_ms:
+                        expired_session_ids.append(session_id)
+            for session_id in expired_session_ids:
+                LOGGER.info("evicting idle session session_id=%d", session_id)
+                self._close_session(session_id)
 
     def _send_open_err(self, *, session_id: int, error_code: int, reason: str) -> None:
+        remote_host = self._session_remote_host(session_id)
+        if remote_host is None:
+            return
         self.reliable.send_untracked(
             msg_type=MessageType.OPEN_ERR,
             session_id=session_id,
             stream_id=0,
             payload=OpenErr(error_code=error_code, reason=reason).encode(),
+            remote_host=remote_host,
         )
 
     def relay_tcp(self, session_id: int, stream_id: int) -> None:
         with self.connection_lock:
-            stream = self.outbound_streams.get(stream_id)
+            stream = self.outbound_streams.get((session_id, stream_id))
         if not isinstance(stream, TCPStreamState):
             return
         outbound_connection = stream.socket
@@ -170,6 +246,9 @@ class Server:
             while True:
                 data = outbound_connection.recv(4096)
                 if not data:
+                    break
+                remote_host = self._session_remote_host(session_id)
+                if remote_host is None:
                     break
                 mtu_payload = max(1, self.config.session.mtu_payload)
                 for offset in range(0, len(data), mtu_payload):
@@ -179,19 +258,21 @@ class Server:
                         session_id=session_id,
                         stream_id=stream_id,
                         payload=Data(payload=chunk).encode(),
+                        remote_host=remote_host,
                     )
         except OSError:
             pass
         finally:
-            if self._stream_exists(stream_id):
+            remote_host = self._session_remote_host(session_id)
+            if remote_host is not None and self._stream_exists(session_id, stream_id):
                 self.reliable.send_untracked(
                     msg_type=MessageType.CLOSE,
                     session_id=session_id,
                     stream_id=stream_id,
                     payload=Close().encode(),
+                    remote_host=remote_host,
                 )
-            self._close_stream(stream_id)
-            self.reliable.clear_stream_state(stream_id)
+            self._close_stream(session_id, stream_id)
 
     def _send_udp_datagram(self, stream: DatagramStreamState, packet: DatagramPacket) -> None:
         if packet.remote_port == 0:
@@ -229,11 +310,11 @@ class Server:
 
     def relay_datagram(self, session_id: int, stream_id: int) -> None:
         with self.connection_lock:
-            stream = self.outbound_streams.get(stream_id)
+            stream = self.outbound_streams.get((session_id, stream_id))
         if not isinstance(stream, DatagramStreamState):
             return
         try:
-            while self._stream_exists(stream_id):
+            while self._stream_exists(session_id, stream_id):
                 with stream.sockets_lock:
                     sockets = list(stream.sockets.values())
                 if not sockets:
@@ -242,6 +323,9 @@ class Server:
                 try:
                     readable, _, _ = select.select(sockets, [], [], 0.5)
                 except OSError:
+                    break
+                remote_host = self._session_remote_host(session_id)
+                if remote_host is None:
                     break
                 mtu_payload = max(1, self.config.session.mtu_payload)
                 for udp_socket in readable:
@@ -261,19 +345,21 @@ class Server:
                         session_id=session_id,
                         stream_id=stream_id,
                         payload=Data(payload=encoded).encode(),
+                        remote_host=remote_host,
                     )
         finally:
-            if self._stream_exists(stream_id):
+            remote_host = self._session_remote_host(session_id)
+            if remote_host is not None and self._stream_exists(session_id, stream_id):
                 self.reliable.send_untracked(
                     msg_type=MessageType.CLOSE,
                     session_id=session_id,
                     stream_id=stream_id,
                     payload=Close().encode(),
+                    remote_host=remote_host,
                 )
-            self._close_stream(stream_id)
-            self.reliable.clear_stream_state(stream_id)
+            self._close_stream(session_id, stream_id)
 
-    def process_hello(self, frame: Frame) -> None:
+    def process_hello(self, frame: Frame, source_host: str) -> None:
         try:
             hello = Hello.decode(frame.payload)
         except ValueError:
@@ -282,7 +368,7 @@ class Server:
         cache_entry = self.hello_cache.get(hello.nonce)
         now_timestamp_ms = now_ms()
         if cache_entry is not None:
-            cached_session_id, cached_ack, issued_at_ms = cache_entry
+            cached_session_id, cached_ack, issued_at_ms, cached_remote_host = cache_entry
             if now_timestamp_ms - issued_at_ms <= self.config.common.auth_replay_ttl_ms:
                 self.reliable.send_untracked(
                     msg_type=MessageType.HELLO_ACK,
@@ -290,6 +376,7 @@ class Server:
                     stream_id=0,
                     payload=cached_ack.encode(),
                     ack_num=frame.seq_num,
+                    remote_host=cached_remote_host,
                 )
                 return
             self.hello_cache.pop(hello.nonce, None)
@@ -320,7 +407,7 @@ class Server:
             LOGGER.warning("rejecting hello with invalid signature")
             return
 
-        session_id = int.from_bytes(os.urandom(4), "big") or 1
+        session_id = self._allocate_session_id()
         server_nonce = generate_nonce()
         ack_timestamp_ms = now_ms()
         ack_hmac = sign_server_hello_ack(
@@ -330,32 +417,31 @@ class Server:
             server_nonce=server_nonce,
             timestamp_ms=ack_timestamp_ms,
         )
-        if self.active_session_id is not None and self.active_session_id != session_id:
-            with self.connection_lock:
-                old_stream_ids = list(self.outbound_streams.keys())
-                old_streams = list(self.outbound_streams.values())
-                self.outbound_streams.clear()
-            for stream in old_streams:
-                self._close_stream_state(stream)
-            for old_stream_id in old_stream_ids:
-                self.reliable.clear_stream_state(old_stream_id)
         hello_ack = HelloAck(
             server_nonce=server_nonce,
             timestamp_ms=ack_timestamp_ms,
             hmac_sha256=ack_hmac,
         )
-        self.hello_cache[hello.nonce] = (session_id, hello_ack, now_timestamp_ms)
+
+        with self.connection_lock:
+            self.sessions[session_id] = SessionState(
+                remote_host=source_host,
+                client_nonce=hello.nonce,
+                last_activity_ms=now_timestamp_ms,
+            )
+
+        self.hello_cache[hello.nonce] = (session_id, hello_ack, now_timestamp_ms, source_host)
         if len(self.hello_cache) > self.config.common.auth_replay_max_entries:
             oldest_nonce = next(iter(self.hello_cache))
             self.hello_cache.pop(oldest_nonce, None)
-        self.active_session_id = session_id
-        self.client_nonce = hello.nonce
+
         self.reliable.send_untracked(
             msg_type=MessageType.HELLO_ACK,
             session_id=session_id,
             stream_id=0,
             payload=hello_ack.encode(),
             ack_num=frame.seq_num,
+            remote_host=source_host,
         )
 
     def process_open_stream(self, frame: Frame) -> None:
@@ -368,15 +454,6 @@ class Server:
                 reason="invalid open payload",
             )
             return
-
-        with self.connection_lock:
-            if len(self.outbound_streams) >= self.config.max_streams:
-                self._send_open_err(
-                    session_id=frame.session_id,
-                    error_code=429,
-                    reason="too many streams",
-                )
-                return
 
         outbound_connection = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         outbound_connection.settimeout(self.config.target_connect_timeout_ms / 1000.0)
@@ -393,9 +470,15 @@ class Server:
         finally:
             outbound_connection.settimeout(None)
 
-        stream_id = self._allocate_stream_id()
+        stream_id = self._allocate_stream_id(frame.session_id)
         with self.connection_lock:
-            self.outbound_streams[stream_id] = TCPStreamState(socket=outbound_connection)
+            session = self.sessions.get(frame.session_id)
+            if session is None:
+                outbound_connection.close()
+                return
+            session.stream_ids.add(stream_id)
+            self.outbound_streams[(frame.session_id, stream_id)] = TCPStreamState(socket=outbound_connection)
+            remote_host = session.remote_host
 
         relay_thread = Thread(
             target=self.relay_tcp,
@@ -409,6 +492,7 @@ class Server:
             session_id=frame.session_id,
             stream_id=stream_id,
             payload=OpenOk(assigned_stream_id=stream_id).encode(),
+            remote_host=remote_host,
         )
 
     def process_open_datagram(self, frame: Frame) -> None:
@@ -422,19 +506,15 @@ class Server:
             )
             return
 
-        with self.connection_lock:
-            if len(self.outbound_streams) >= self.config.max_streams:
-                self._send_open_err(
-                    session_id=frame.session_id,
-                    error_code=429,
-                    reason="too many streams",
-                )
-                return
-
-        stream_id = self._allocate_stream_id()
+        stream_id = self._allocate_stream_id(frame.session_id)
         datagram_stream = DatagramStreamState()
         with self.connection_lock:
-            self.outbound_streams[stream_id] = datagram_stream
+            session = self.sessions.get(frame.session_id)
+            if session is None:
+                return
+            session.stream_ids.add(stream_id)
+            self.outbound_streams[(frame.session_id, stream_id)] = datagram_stream
+            remote_host = session.remote_host
 
         relay_thread = Thread(
             target=self.relay_datagram,
@@ -448,20 +528,20 @@ class Server:
             session_id=frame.session_id,
             stream_id=stream_id,
             payload=OpenOk(assigned_stream_id=stream_id).encode(),
+            remote_host=remote_host,
         )
 
     def process_data(self, frame: Frame) -> None:
         payload = Data.decode(frame.payload).payload
         with self.connection_lock:
-            stream = self.outbound_streams.get(frame.stream_id)
+            stream = self.outbound_streams.get((frame.session_id, frame.stream_id))
         if stream is None:
             return
         if isinstance(stream, TCPStreamState):
             try:
                 stream.socket.sendall(payload)
             except OSError:
-                self._close_stream(frame.stream_id)
-                self.reliable.clear_stream_state(frame.stream_id)
+                self._close_stream(frame.session_id, frame.stream_id)
             return
         try:
             packet = DatagramPacket.decode(payload)
@@ -474,32 +554,49 @@ class Server:
             Close.decode(frame.payload)
         except ValueError:
             return
-        self._close_stream(frame.stream_id)
-        self.reliable.clear_stream_state(frame.stream_id)
+
+        remote_host = self._session_remote_host(frame.session_id)
+        self._close_stream(frame.session_id, frame.stream_id)
+        if remote_host is None:
+            return
         self.reliable.send_untracked(
             msg_type=MessageType.CLOSE_ACK,
             session_id=frame.session_id,
             stream_id=frame.stream_id,
             payload=CloseAck().encode(),
             ack_num=frame.seq_num,
+            remote_host=remote_host,
         )
 
-    def on_retry_exhausted(self, stream_id: int, msg_type: MessageType) -> None:
+    def on_retry_exhausted(self, session_id: int, stream_id: int, msg_type: MessageType) -> None:
         if stream_id == 0:
             return
-        LOGGER.warning("retry exhausted stream_id=%d msg_type=%s", stream_id, msg_type.name)
-        self._close_stream(stream_id)
-        self.reliable.clear_stream_state(stream_id)
+        LOGGER.warning(
+            "retry exhausted session_id=%d stream_id=%d msg_type=%s",
+            session_id,
+            stream_id,
+            msg_type.name,
+        )
+        self._close_stream(session_id, stream_id)
 
-    def process_frame(self, frame: Frame) -> None:
+    def process_frame(self, frame: Frame, source_host: str) -> None:
         if frame.msg_type == MessageType.HELLO:
-            self.process_hello(frame)
+            self.process_hello(frame, source_host)
             return
 
-        if self.active_session_id is None:
-            return
-        if frame.session_id != self.active_session_id:
-            return
+        with self.connection_lock:
+            session = self.sessions.get(frame.session_id)
+            if session is None:
+                return
+            if session.remote_host != source_host:
+                LOGGER.warning(
+                    "rejecting frame with mismatched source session_id=%d expected=%s got=%s",
+                    frame.session_id,
+                    session.remote_host,
+                    source_host,
+                )
+                return
+            session.last_activity_ms = now_ms()
 
         if frame.msg_type == MessageType.OPEN_STREAM:
             self.process_open_stream(frame)

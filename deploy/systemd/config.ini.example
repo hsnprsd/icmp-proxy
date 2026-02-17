@@ -27,9 +27,8 @@ performance_metrics_enable = 0
 [server]
 bind_host = 0.0.0.0
 client_host = 127.0.0.1
-max_streams = 512
 target_connect_timeout_ms = 3000
-stream_idle_timeout_ms = 60000
+session_idle_timeout_ms = 60000
 
 [client]
 server_host = 127.0.0.1

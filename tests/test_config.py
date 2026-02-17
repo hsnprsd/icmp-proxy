@@ -47,9 +47,8 @@ _CLIENT_ONLY_ENV_VARS = [
 _SERVER_ENV_VARS = [
     "ICMP_PROXY_BIND_HOST",
     "ICMP_PROXY_CLIENT_HOST",
-    "ICMP_PROXY_MAX_STREAMS",
     "ICMP_PROXY_TARGET_CONNECT_TIMEOUT_MS",
-    "ICMP_PROXY_STREAM_IDLE_TIMEOUT_MS",
+    "ICMP_PROXY_SESSION_IDLE_TIMEOUT_MS",
 ]
 
 
@@ -232,7 +231,7 @@ def test_config_file_env_path_override(monkeypatch, tmp_path) -> None:
         """
 [server]
 bind_host = 127.0.0.1
-max_streams = 900
+session_idle_timeout_ms = 900
 """,
         name="custom.ini",
     )
@@ -241,7 +240,7 @@ max_streams = 900
     config = load_server_config()
 
     assert config.bind_host == "127.0.0.1"
-    assert config.max_streams == 900
+    assert config.session_idle_timeout_ms == 900
 
 
 def test_missing_explicit_config_file_raises(monkeypatch, tmp_path) -> None:

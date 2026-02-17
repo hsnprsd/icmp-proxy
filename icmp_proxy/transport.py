@@ -20,6 +20,7 @@ MAX_SEQUENCE_NUMBER = (1 << 32) - 1
 @dataclass
 class PendingFrame:
     frame: Frame
+    remote_host: str
     sent_at: float
     retries: int
 
@@ -64,8 +65,8 @@ class ReliableICMPSession:
         flowcontrol_loss_threshold: float = 0.02,
         stats_interval_ms: int = 1000,
         performance_metrics_enable: bool = False,
-        on_frame: Callable[[Frame], None] | None = None,
-        on_retry_exhausted: Callable[[int, MessageType], None] | None = None,
+        on_frame: Callable[[Frame, str], None] | None = None,
+        on_retry_exhausted: Callable[[int, int, MessageType], None] | None = None,
     ) -> None:
         self.connection = connection
         self.remote_host = remote_host
@@ -102,11 +103,11 @@ class ReliableICMPSession:
         self._next_seq_num = int.from_bytes(os.urandom(4), byteorder="big")
         if self._next_seq_num == 0:
             self._next_seq_num = 1
-        self._pending: dict[tuple[int, int], PendingFrame] = {}
-        self._inflight_by_stream: dict[int, int] = {}
+        self._pending: dict[tuple[int, int, int], PendingFrame] = {}
+        self._inflight_by_stream: dict[tuple[int, int], int] = {}
         self._global_inflight = 0
-        self._stream_windows: dict[int, int] = {}
-        self._seen: dict[int, OrderedDict[int, None]] = {}
+        self._stream_windows: dict[tuple[int, int], int] = {}
+        self._seen: dict[tuple[int, int], OrderedDict[int, None]] = {}
         self._received: deque[Frame] = deque()
         self._recv_thread: threading.Thread | None = None
         self._retx_thread: threading.Thread | None = None
@@ -150,19 +151,20 @@ class ReliableICMPSession:
         stream_id: int,
         payload: bytes,
         flags: int = 0,
+        remote_host: str | None = None,
     ) -> int:
         deadline = time.monotonic() + 2.0
+        stream_key = (session_id, stream_id)
+        target_host = self.remote_host if remote_host is None else remote_host
         with self._state_lock:
             while True:
-                stream_window = self._stream_windows.get(
-                    stream_id, self.min_inflight_per_stream
-                )
-                stream_inflight = self._inflight_by_stream.get(stream_id, 0)
+                stream_window = self._stream_windows.get(stream_key, self.min_inflight_per_stream)
+                stream_inflight = self._inflight_by_stream.get(stream_key, 0)
                 if (
                     stream_inflight < stream_window
                     and self._global_inflight < self.max_global_inflight
                 ):
-                    self._stream_windows.setdefault(stream_id, stream_window)
+                    self._stream_windows.setdefault(stream_key, stream_window)
                     seq_num = self._next_sequence_number_locked()
                     frame = Frame.make(
                         msg_type=msg_type,
@@ -172,12 +174,13 @@ class ReliableICMPSession:
                         seq_num=seq_num,
                         flags=flags | FLAG_RELIABLE,
                     )
-                    self._pending[(stream_id, seq_num)] = PendingFrame(
+                    self._pending[(session_id, stream_id, seq_num)] = PendingFrame(
                         frame=frame,
+                        remote_host=target_host,
                         sent_at=time.monotonic(),
                         retries=0,
                     )
-                    self._inflight_by_stream[stream_id] = stream_inflight + 1
+                    self._inflight_by_stream[stream_key] = stream_inflight + 1
                     self._global_inflight += 1
                     self._stats_sent_frames += 1
                     break
@@ -190,7 +193,7 @@ class ReliableICMPSession:
                         f"global={self._global_inflight}/{self.max_global_inflight})"
                     )
                 self._inflight_cv.wait(timeout=remaining)
-        self._send_frame(frame)
+        self._send_frame(frame, remote_host=target_host)
         return seq_num
 
     def send_untracked(
@@ -202,6 +205,7 @@ class ReliableICMPSession:
         payload: bytes,
         ack_num: int = 0,
         flags: int = 0,
+        remote_host: str | None = None,
     ) -> None:
         frame = Frame.make(
             msg_type=msg_type,
@@ -211,13 +215,13 @@ class ReliableICMPSession:
             ack_num=ack_num,
             flags=flags,
         )
-        self._send_frame(frame)
+        self._send_frame(frame, remote_host=remote_host)
 
-    def wait_for_ack(self, stream_id: int, seq_num: int, timeout_s: float) -> bool:
+    def wait_for_ack(self, session_id: int, stream_id: int, seq_num: int, timeout_s: float) -> bool:
         deadline = time.monotonic() + timeout_s
         while time.monotonic() < deadline:
             with self._state_lock:
-                if (stream_id, seq_num) not in self._pending:
+                if (session_id, stream_id, seq_num) not in self._pending:
                     return True
             time.sleep(0.01)
         return False
@@ -250,16 +254,17 @@ class ReliableICMPSession:
                     return None
                 self._received_cv.wait(timeout=remaining)
 
-    def clear_stream_state(self, stream_id: int) -> None:
+    def clear_stream_state(self, session_id: int, stream_id: int) -> None:
+        stream_key = (session_id, stream_id)
         with self._state_lock:
-            keys = [key for key in self._pending if key[0] == stream_id]
+            keys = [key for key in self._pending if key[0] == session_id and key[1] == stream_id]
             for key in keys:
                 self._pending.pop(key, None)
             if keys:
                 self._global_inflight = max(0, self._global_inflight - len(keys))
-            self._inflight_by_stream.pop(stream_id, None)
-            self._stream_windows.pop(stream_id, None)
-            self._seen.pop(stream_id, None)
+            self._inflight_by_stream.pop(stream_key, None)
+            self._stream_windows.pop(stream_key, None)
+            self._seen.pop(stream_key, None)
             self._inflight_cv.notify_all()
 
     def _next_sequence_number_locked(self) -> int:
@@ -269,15 +274,16 @@ class ReliableICMPSession:
             self._next_seq_num = 1
         return seq_num
 
-    def _send_frame(self, frame: Frame) -> None:
+    def _send_frame(self, frame: Frame, *, remote_host: str | None = None) -> None:
         packet = ICMPPacket(
             icmp_type=self.outbound_icmp_type,
             icmp_code=self.outbound_icmp_code,
             payload=frame.encode(),
         )
+        target_host = self.remote_host if remote_host is None else remote_host
         with self._send_lock:
             try:
-                self.connection.sendto(packet.to_bytes(), (self.remote_host, 0))
+                self.connection.sendto(packet.to_bytes(), (target_host, 0))
             except OSError:
                 return
 
@@ -285,30 +291,32 @@ class ReliableICMPSession:
         if frame.ack_num == 0:
             return
         with self._state_lock:
-            pending = self._pending.pop((frame.stream_id, frame.ack_num), None)
+            pending = self._pending.pop((frame.session_id, frame.stream_id, frame.ack_num), None)
             if pending is None:
                 return
-            self._decrement_inflight_locked(frame.stream_id)
+            self._decrement_inflight_locked(frame.session_id, frame.stream_id)
             self._stats_acked_bytes += len(pending.frame.payload)
             self._update_rtt_locked(time.monotonic() - pending.sent_at)
             self._inflight_cv.notify_all()
 
-    def _send_ack(self, frame: Frame) -> None:
+    def _send_ack(self, frame: Frame, source_host: str) -> None:
         self.send_untracked(
             msg_type=MessageType.KEEPALIVE,
             session_id=frame.session_id,
             stream_id=frame.stream_id,
             payload=b"",
             ack_num=frame.seq_num,
+            remote_host=source_host,
         )
 
-    def _is_duplicate(self, stream_id: int, seq_num: int) -> bool:
+    def _is_duplicate(self, session_id: int, stream_id: int, seq_num: int) -> bool:
         if seq_num == 0:
             return False
+        stream_key = (session_id, stream_id)
         with self._state_lock:
-            if stream_id not in self._seen:
-                self._seen[stream_id] = OrderedDict()
-            seen_stream = self._seen[stream_id]
+            if stream_key not in self._seen:
+                self._seen[stream_key] = OrderedDict()
+            seen_stream = self._seen[stream_key]
             if seq_num in seen_stream:
                 return True
             seen_stream[seq_num] = None
@@ -316,18 +324,18 @@ class ReliableICMPSession:
                 seen_stream.popitem(last=False)
             return False
 
-    def _handle_inbound_frame(self, frame: Frame) -> None:
+    def _handle_inbound_frame(self, frame: Frame, source_host: str) -> None:
         self._handle_ack_num(frame)
         if frame.flags & FLAG_RELIABLE:
-            self._send_ack(frame)
-            if self._is_duplicate(frame.stream_id, frame.seq_num):
+            self._send_ack(frame, source_host)
+            if self._is_duplicate(frame.session_id, frame.stream_id, frame.seq_num):
                 return
         if frame.msg_type == MessageType.KEEPALIVE and not frame.payload:
             return
 
         if self.on_frame is not None:
             try:
-                self.on_frame(frame)
+                self.on_frame(frame, source_host)
             except Exception:
                 return
             return
@@ -339,7 +347,7 @@ class ReliableICMPSession:
     def _recv_loop(self) -> None:
         while not self._stop_event.is_set():
             try:
-                packet = self.connection.recv(65535)
+                packet, address = self.connection.recvfrom(65535)
             except socket.timeout:
                 continue
             except OSError:
@@ -353,14 +361,18 @@ class ReliableICMPSession:
                 frame = Frame.decode(icmp_packet.payload)
             except Exception:
                 continue
-            self._handle_inbound_frame(frame)
+            source_host = ""
+            if isinstance(address, tuple) and address:
+                source_host = str(address[0])
+            self._handle_inbound_frame(frame, source_host)
 
-    def _decrement_inflight_locked(self, stream_id: int) -> None:
-        stream_inflight = self._inflight_by_stream.get(stream_id, 0)
+    def _decrement_inflight_locked(self, session_id: int, stream_id: int) -> None:
+        stream_key = (session_id, stream_id)
+        stream_inflight = self._inflight_by_stream.get(stream_key, 0)
         if stream_inflight <= 1:
-            self._inflight_by_stream.pop(stream_id, None)
+            self._inflight_by_stream.pop(stream_key, None)
         else:
-            self._inflight_by_stream[stream_id] = stream_inflight - 1
+            self._inflight_by_stream[stream_key] = stream_inflight - 1
         if self._global_inflight > 0:
             self._global_inflight -= 1
 
@@ -397,9 +409,7 @@ class ReliableICMPSession:
         stream_ids = set(self._stream_windows)
         stream_ids.update(self._inflight_by_stream)
         for stream_id in stream_ids:
-            current_window = self._stream_windows.get(
-                stream_id, self.min_inflight_per_stream
-            )
+            current_window = self._stream_windows.get(stream_id, self.min_inflight_per_stream)
             inflight = self._inflight_by_stream.get(stream_id, 0)
             new_window = current_window
 
@@ -479,23 +489,23 @@ class ReliableICMPSession:
     def _retx_loop(self) -> None:
         while not self._stop_event.is_set():
             now = time.monotonic()
-            resend: list[Frame] = []
-            exhausted: dict[int, MessageType] = {}
+            resend: list[tuple[Frame, str]] = []
+            exhausted: dict[tuple[int, int], MessageType] = {}
             stats_snapshot: StatsSnapshot | None = None
             with self._state_lock:
                 for key, pending in list(self._pending.items()):
                     if now - pending.sent_at < self.retx_timeout_s:
                         continue
                     if pending.retries >= self.retx_max_retries:
-                        exhausted.setdefault(key[0], pending.frame.msg_type)
+                        exhausted.setdefault((key[0], key[1]), pending.frame.msg_type)
                         del self._pending[key]
-                        self._decrement_inflight_locked(key[0])
+                        self._decrement_inflight_locked(key[0], key[1])
                         self._stats_dropped_frames += 1
                         self._inflight_cv.notify_all()
                         continue
                     pending.retries += 1
                     pending.sent_at = now
-                    resend.append(pending.frame)
+                    resend.append((pending.frame, pending.remote_host))
                     self._stats_retry_frames += 1
 
                 if now - self._last_flowcontrol_at >= self._flowcontrol_interval_locked():
@@ -505,16 +515,16 @@ class ReliableICMPSession:
                 if now - self._stats_window_started >= self.stats_interval_s:
                     stats_snapshot = self._take_stats_snapshot_locked(now)
 
-            for frame in resend:
-                self._send_frame(frame)
+            for frame, remote_host in resend:
+                self._send_frame(frame, remote_host=remote_host)
 
             if stats_snapshot is not None and self.performance_metrics_enable:
                 self._log_stats(stats_snapshot)
 
             if self.on_retry_exhausted is not None:
-                for stream_id, msg_type in exhausted.items():
+                for (session_id, stream_id), msg_type in exhausted.items():
                     try:
-                        self.on_retry_exhausted(stream_id, msg_type)
+                        self.on_retry_exhausted(session_id, stream_id, msg_type)
                     except Exception:
                         continue
 
