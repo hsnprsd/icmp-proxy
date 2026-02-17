@@ -147,9 +147,7 @@ def main():
                     stream_id,
                     len(payload),
                 )
-                print(stream_id)
-                print(len(payload))
-                print(payload)
+                LOGGER.debug("Response payload stream_id=%d payload=%r", stream_id, payload)
 
             LOGGER.info("Sending PROXY_CLOSE stream_id=%d", stream_id)
             close_seq = reliable.send_reliable(
