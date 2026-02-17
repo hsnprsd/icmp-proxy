@@ -18,6 +18,8 @@ The runtime is configured through environment variables:
 - `ICMP_PROXY_PSK_FILE` (default: `./psk.txt`)
 - `ICMP_PROXY_CLIENT_ID` (default: `default-client`)
 - `ICMP_PROXY_REMOTE_HOST` (client-side, default: `127.0.0.1`)
+- `ICMP_PROXY_HTTP_PROXY_BIND_HOST` (client-side HTTP proxy listen host, default: `127.0.0.1`)
+- `ICMP_PROXY_HTTP_PROXY_BIND_PORT` (client-side HTTP proxy listen port, default: `8080`)
 - `ICMP_PROXY_BIND_HOST` (server-side, default: `0.0.0.0`)
 - `ICMP_PROXY_CLIENT_HOST` (server-side destination for replies, default: `127.0.0.1`)
 - `ICMP_PROXY_MAX_STREAMS` (default: `512`)
@@ -74,6 +76,9 @@ Start client:
 ```bash
 sudo -E ICMP_PROXY_PSK_FILE=./psk.txt ICMP_PROXY_CLIENT_ID=default-client ICMP_PROXY_REMOTE_HOST=127.0.0.1 python3 -m icmp_proxy.client
 ```
+
+Configure your browser or CLI HTTP client to use `127.0.0.1:8080` as its HTTP proxy.
+For HTTPS sites, clients should use normal `CONNECT` proxy mode.
 
 Restore host default:
 

@@ -49,6 +49,8 @@ class ServerConfig:
 @dataclass(frozen=True)
 class ClientConfig:
     server_host: str
+    http_proxy_bind_host: str
+    http_proxy_bind_port: int
     common: CommonConfig
     session: SessionConfig
 
@@ -90,6 +92,8 @@ def load_server_config() -> ServerConfig:
 def load_client_config() -> ClientConfig:
     return ClientConfig(
         server_host=_env_str("ICMP_PROXY_REMOTE_HOST", "127.0.0.1"),
+        http_proxy_bind_host=_env_str("ICMP_PROXY_HTTP_PROXY_BIND_HOST", "127.0.0.1"),
+        http_proxy_bind_port=_env_int("ICMP_PROXY_HTTP_PROXY_BIND_PORT", 8080),
         common=load_common_config(),
         session=load_session_config(),
     )

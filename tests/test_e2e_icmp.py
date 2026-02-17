@@ -23,6 +23,8 @@ def _test_client_config() -> ClientConfig:
     )
     return ClientConfig(
         server_host="127.0.0.1",
+        http_proxy_bind_host="127.0.0.1",
+        http_proxy_bind_port=8080,
         common=common,
         session=session,
     )
