@@ -1,8 +1,8 @@
 import os
 import socket
-from threading import Thread
+from threading import Lock, Thread
 
-from icmp import ICMP_ECHO_REPLY, ICMP_ECHO_REPLY_CODE, ICMP_ECHO_REQUEST, ICMPPacket
+from icmp import ICMP_ECHO_REPLY, ICMP_ECHO_REPLY_CODE
 from proxy import (
     Frame,
     FrameType,
@@ -11,129 +11,163 @@ from proxy import (
     ProxyStart,
     ProxyStartResponse,
 )
+from reliable import ReliableICMPSession
 
 CLIENT_HOST = "127.0.0.1"
+RETX_TIMEOUT_MS = 100
+RETX_MAX_RETRIES = 5
+RETX_SCAN_INTERVAL_MS = 20
 
 
 class Server:
     def __init__(self) -> None:
         self.host_id = 0
         self.outbound_connections: dict[int, socket.socket] = {}
+        self.connection_lock = Lock()
 
     def __enter__(self):
         self.socket = socket.socket(
             socket.AF_INET, socket.SOCK_RAW, socket.IPPROTO_ICMP
         )
         self.socket.bind(("0.0.0.0", 0))
+        self.reliable = ReliableICMPSession(
+            connection=self.socket,
+            local_host_id=self.host_id,
+            remote_host=CLIENT_HOST,
+            outbound_icmp_type=ICMP_ECHO_REPLY,
+            outbound_icmp_code=ICMP_ECHO_REPLY_CODE,
+            retx_timeout_ms=RETX_TIMEOUT_MS,
+            retx_max_retries=RETX_MAX_RETRIES,
+            retx_scan_interval_ms=RETX_SCAN_INTERVAL_MS,
+            on_frame=self.process_frame,
+            on_retry_exhausted=self.on_retry_exhausted,
+        )
+        self.reliable.start()
         return self
 
     def __exit__(self, exc_type, exc_value, traceback):
+        self.reliable.stop()
+        with self.connection_lock:
+            connections = list(self.outbound_connections.values())
+            self.outbound_connections.clear()
+        for connection in connections:
+            connection.close()
         self.socket.close()
 
     def __call__(self) -> None:
-        while True:
-            packet = self.socket.recv(4096)
-            print(packet)
-            packet = ICMPPacket.from_bytes(packet)
-            frame = Frame.decode(packet.payload)
-            if frame.from_host == self.host_id:
-                continue
-
-            self.process_frame(
-                connection=self.socket,
-                client_host=CLIENT_HOST,
-                frame=frame,
-            )
+        self.reliable.wait()
 
     def relay(
-        self,
-        client_host: str,
-        stream_id: int,
-    ):
-        outboud_connection = self.outbound_connections[stream_id]
-        while True:
-            data = outboud_connection.recv(4096)
-            if not data:
-                break
+        self, stream_id: int
+    ) -> None:
+        with self.connection_lock:
+            outbound_connection = self.outbound_connections.get(stream_id)
+        if outbound_connection is None:
+            return
 
-            packet = ICMPPacket(
-                icmp_type=ICMP_ECHO_REPLY,
-                icmp_code=ICMP_ECHO_REPLY_CODE,
-                payload=Frame(
-                    from_host=self.host_id,
+        try:
+            while True:
+                data = outbound_connection.recv(4096)
+                if not data:
+                    break
+                self.reliable.send_reliable(
                     frame_type=FrameType.PROXY_DATA,
+                    stream_id=stream_id,
                     payload=ProxyData(
-                        stream_id=stream_id,
                         size=len(data),
                         payload=data,
                     ).encode(),
-                ).encode(),
-            )
-            self.socket.sendto(packet.to_bytes(), (client_host, 0))
+                )
+        except OSError:
+            pass
+        finally:
+            if self.stream_exists(stream_id):
+                self.reliable.send_reliable(
+                    frame_type=FrameType.PROXY_CLOSE,
+                    stream_id=stream_id,
+                    payload=ProxyClose().encode(),
+                )
+            self.close_stream(stream_id)
 
-        packet = ICMPPacket(
-            icmp_type=ICMP_ECHO_REPLY,
-            icmp_code=ICMP_ECHO_REPLY_CODE,
-            payload=Frame(
-                from_host=self.host_id,
-                frame_type=FrameType.PROXY_CLOSE,
-                payload=ProxyClose(stream_id=stream_id).encode(),
-            ).encode(),
-        )
-        self.socket.sendto(packet.to_bytes(), (client_host, 0))
-
-    def process_proxy_start(
-        self,
-        client_host: str,
-        proxy_start: ProxyStart,
-    ) -> None:
-        while True:
-            stream_id = int.from_bytes(os.urandom(4))
-            if stream_id in self.outbound_connections:
-                continue
-            break
+    def process_proxy_start(self, proxy_start: ProxyStart) -> None:
         outbound_connection = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        outbound_connection.connect((proxy_start.remote_host, proxy_start.remote_port))
+        try:
+            outbound_connection.connect(
+                (proxy_start.remote_host, proxy_start.remote_port)
+            )
+        except OSError:
+            outbound_connection.close()
+            return
 
-        self.outbound_connections[stream_id] = outbound_connection
+        stream_id = self.allocate_stream_id()
+        with self.connection_lock:
+            self.outbound_connections[stream_id] = outbound_connection
 
-        relay_thread = Thread(
-            target=self.relay, args=(client_host, stream_id)
-        )
+        relay_thread = Thread(target=self.relay, args=(stream_id,), daemon=True)
         relay_thread.start()
 
-        packet = ICMPPacket(
-            icmp_type=ICMP_ECHO_REPLY,
-            icmp_code=ICMP_ECHO_REPLY_CODE,
-            payload=Frame(
-                from_host=self.host_id,
-                frame_type=FrameType.PROXY_START_RESPONSE,
-                payload=ProxyStartResponse(stream_id=stream_id).encode(),
-            ).encode(),
+        self.reliable.send_reliable(
+            frame_type=FrameType.PROXY_START_RESPONSE,
+            stream_id=stream_id,
+            payload=ProxyStartResponse(stream_id=stream_id).encode(),
         )
 
-        self.socket.sendto(packet.to_bytes(), (client_host, 0))
+    def allocate_stream_id(self) -> int:
+        while True:
+            stream_id = int.from_bytes(os.urandom(4), byteorder="big")
+            with self.connection_lock:
+                if stream_id not in self.outbound_connections:
+                    return stream_id
 
-    def process_proxy_data(self, proxy_data: ProxyData) -> None:
-        connection = self.outbound_connections[proxy_data.stream_id]
-        connection.sendall(proxy_data.payload)
+    def process_proxy_data(self, stream_id: int, proxy_data: ProxyData) -> None:
+        with self.connection_lock:
+            connection = self.outbound_connections.get(stream_id)
+        if connection is None:
+            return
+        try:
+            connection.sendall(proxy_data.payload)
+        except OSError:
+            self.close_stream(stream_id)
+            self.reliable.clear_stream_state(stream_id)
 
-    def process_proxy_close(self, proxy_close: ProxyClose) -> None:
-        if proxy_close.stream_id in self.outbound_connections:
-            outbound_connection = self.outbound_connections[proxy_close.stream_id]
-            del self.outbound_connections[proxy_close.stream_id]
+    def process_proxy_close(self, stream_id: int) -> None:
+        self.close_stream(stream_id)
+        self.reliable.clear_stream_state(stream_id)
+
+    def on_retry_exhausted(self, stream_id: int, frame_type: FrameType) -> None:
+        if stream_id == 0:
+            return
+        self.close_stream(stream_id)
+        self.reliable.clear_stream_state(stream_id)
+        if frame_type != FrameType.PROXY_CLOSE:
+            self.reliable.send_untracked(
+                frame_type=FrameType.PROXY_CLOSE,
+                stream_id=stream_id,
+                payload=ProxyClose().encode(),
+            )
+
+    def close_stream(self, stream_id: int) -> None:
+        with self.connection_lock:
+            outbound_connection = self.outbound_connections.pop(stream_id, None)
+        if outbound_connection is not None:
             outbound_connection.close()
 
-    def process_frame(self, connection: socket.socket, client_host: str, frame: Frame):
+    def stream_exists(self, stream_id: int) -> bool:
+        with self.connection_lock:
+            return stream_id in self.outbound_connections
+
+    def process_frame(self, frame: Frame) -> None:
         if frame.frame_type == FrameType.PROXY_START:
-            self.process_proxy_start(
-                client_host=client_host,
-                proxy_start=ProxyStart.decode(frame.payload),
-            )
+            self.process_proxy_start(proxy_start=ProxyStart.decode(frame.payload))
         elif frame.frame_type == FrameType.PROXY_DATA:
-            self.process_proxy_data(proxy_data=ProxyData.decode(frame.payload))
+            self.process_proxy_data(
+                stream_id=frame.stream_id,
+                proxy_data=ProxyData.decode(frame.payload),
+            )
         elif frame.frame_type == FrameType.PROXY_CLOSE:
-            self.process_proxy_close(proxy_close=ProxyClose.decode(frame.payload))
+            self.process_proxy_close(stream_id=frame.stream_id)
+        elif frame.frame_type == FrameType.PROXY_ACK:
+            return
         else:
             raise Exception("invalid frame type %s" % frame.frame_type)
 
