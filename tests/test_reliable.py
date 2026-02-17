@@ -194,3 +194,128 @@ def test_inbound_type_mismatch_is_ignored() -> None:
     finally:
         session.stop()
         fake.close()
+
+
+def test_flowcontrol_increases_window_when_stream_is_saturated() -> None:
+    fake = FakeRawSocket()
+    session = _new_session(
+        fake,
+        retx_timeout_ms=1000,
+        retx_scan_interval_ms=10,
+        min_inflight_per_stream=1,
+        max_inflight_per_stream=5,
+        max_global_inflight=16,
+        flowcontrol_enable=True,
+        flowcontrol_increase_step=2,
+        stats_interval_ms=50,
+    )
+    session.start()
+    try:
+        session.send_reliable(
+            msg_type=MessageType.DATA,
+            session_id=7,
+            stream_id=17,
+            payload=b"a",
+        )
+        assert _wait_until(
+            lambda: session._stream_windows.get(17, 0) >= 3,  # pylint: disable=protected-access
+            timeout_s=0.8,
+        )
+    finally:
+        session.stop()
+        fake.close()
+
+
+def test_flowcontrol_decreases_window_when_retries_spike() -> None:
+    fake = FakeRawSocket()
+    session = _new_session(
+        fake,
+        retx_timeout_ms=20,
+        retx_max_retries=10,
+        retx_scan_interval_ms=10,
+        min_inflight_per_stream=1,
+        max_inflight_per_stream=16,
+        max_global_inflight=16,
+        flowcontrol_enable=True,
+        flowcontrol_decrease_factor=0.5,
+        flowcontrol_loss_threshold=0.01,
+        stats_interval_ms=50,
+    )
+    session.start()
+    try:
+        with session._state_lock:  # pylint: disable=protected-access
+            session._stream_windows[23] = 12  # pylint: disable=protected-access
+        session.send_reliable(
+            msg_type=MessageType.DATA,
+            session_id=9,
+            stream_id=23,
+            payload=b"b",
+        )
+        assert _wait_until(
+            lambda: session._stream_windows.get(23, 12) <= 6,  # pylint: disable=protected-access
+            timeout_s=1.0,
+        )
+    finally:
+        session.stop()
+        fake.close()
+
+
+def test_global_inflight_cap_blocks_until_ack() -> None:
+    fake = FakeRawSocket()
+    session = _new_session(
+        fake,
+        retx_timeout_ms=500,
+        min_inflight_per_stream=2,
+        max_inflight_per_stream=2,
+        max_global_inflight=2,
+        flowcontrol_enable=False,
+    )
+    session.start()
+    try:
+        seq1 = session.send_reliable(
+            msg_type=MessageType.DATA,
+            session_id=11,
+            stream_id=1,
+            payload=b"x",
+        )
+        session.send_reliable(
+            msg_type=MessageType.DATA,
+            session_id=11,
+            stream_id=2,
+            payload=b"y",
+        )
+
+        done = threading.Event()
+        failure: list[Exception] = []
+
+        def _sender() -> None:
+            try:
+                session.send_reliable(
+                    msg_type=MessageType.DATA,
+                    session_id=11,
+                    stream_id=3,
+                    payload=b"z",
+                )
+            except Exception as exc:  # pragma: no cover - assertion below validates this path is unused
+                failure.append(exc)
+            finally:
+                done.set()
+
+        sender_thread = threading.Thread(target=_sender, daemon=True)
+        sender_thread.start()
+
+        assert not done.wait(timeout=0.2)
+
+        ack_frame = Frame.make(
+            msg_type=MessageType.KEEPALIVE,
+            payload=b"",
+            session_id=11,
+            stream_id=1,
+            ack_num=seq1,
+        )
+        fake.inject_packet(_wrap_frame_for_recv(ack_frame))
+        assert done.wait(timeout=1.0)
+        assert not failure
+    finally:
+        session.stop()
+        fake.close()
