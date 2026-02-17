@@ -152,6 +152,7 @@ The client process starts both local proxy listeners by default:
 
 Configure your application for either endpoint. For HTTPS over HTTP proxy, clients should use normal `CONNECT` mode.
 SOCKS5 UDP forwarding supports unfragmented datagrams (`FRAG=0`).
+SOCKS5 `CONNECT` and UDP relay support IPv4, IPv6, and domain destinations; set `ICMP_PROXY_SOCKS_PROXY_BIND_HOST` to an IPv6 host (for example `::1`) to listen on IPv6 locally.
 
 Restore host default:
 

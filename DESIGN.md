@@ -216,7 +216,7 @@ When enabled (`flowcontrol_enable`), transport adjusts stream window sizes using
 - Compatibility is intentionally unstable during active development.
 - No implemented use of `FLAG_FRAGMENTED`; oversized tunnel payloads are dropped or must be pre-chunked by sender.
 - SOCKS5 UDP fragmentation unsupported (`FRAG=0` only).
-- TCP upstream dial path is IPv4 socket based (`AF_INET`), while datagram path supports IPv4/IPv6 via `getaddrinfo`.
+- Tunnel transport itself is raw ICMP over IPv4 sockets (`AF_INET`/`IPPROTO_ICMP`); ICMPv6 transport is not implemented.
 - ICMP may be filtered, rate-limited, or deprioritized by networks/middleboxes.
 
 ## Future Work (Potential)

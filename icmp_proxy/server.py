@@ -494,12 +494,12 @@ class Server:
             )
             return
 
-        outbound_connection = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        outbound_connection.settimeout(self.config.target_connect_timeout_ms / 1000.0)
         try:
-            outbound_connection.connect((open_stream.remote_host, open_stream.remote_port))
+            outbound_connection = socket.create_connection(
+                (open_stream.remote_host, open_stream.remote_port),
+                timeout=self.config.target_connect_timeout_ms / 1000.0,
+            )
         except OSError:
-            outbound_connection.close()
             self._metrics.inc_labeled("icmp_proxy_server_open_stream_error_total", "reason", "connect_failed")
             self._send_open_err(
                 session_id=frame.session_id,
@@ -507,8 +507,7 @@ class Server:
                 reason="upstream connect failed",
             )
             return
-        finally:
-            outbound_connection.settimeout(None)
+        outbound_connection.settimeout(None)
 
         stream_id = self._allocate_stream_id(frame.session_id)
         with self.connection_lock:

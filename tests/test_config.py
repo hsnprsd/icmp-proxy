@@ -160,6 +160,15 @@ def test_load_client_config_socks_overrides(monkeypatch) -> None:
     assert config.socks_proxy_bind_port == 11080
 
 
+def test_load_client_config_socks_ipv6_bind_host(monkeypatch) -> None:
+    _clear_client_env(monkeypatch)
+    monkeypatch.setenv("ICMP_PROXY_SOCKS_PROXY_BIND_HOST", "::1")
+
+    config = load_client_config()
+
+    assert config.socks_proxy_bind_host == "::1"
+
+
 def test_load_client_config_from_ini(monkeypatch, tmp_path) -> None:
     _clear_client_env(monkeypatch)
     _write_ini(

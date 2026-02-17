@@ -413,6 +413,38 @@ def _is_unspecified_address(host: str) -> bool:
         return True
 
 
+def _listener_family_for_host(bind_host: str) -> int:
+    try:
+        addr = ipaddress.ip_address(bind_host)
+    except ValueError:
+        try:
+            addr_info = socket.getaddrinfo(
+                bind_host,
+                0,
+                family=socket.AF_UNSPEC,
+                type=socket.SOCK_STREAM,
+                flags=socket.AI_PASSIVE,
+            )
+        except OSError:
+            return socket.AF_INET
+        return addr_info[0][0]
+    if isinstance(addr, ipaddress.IPv6Address):
+        return socket.AF_INET6
+    return socket.AF_INET
+
+
+def _sockaddr_host_port(sockaddr: tuple[object, ...]) -> tuple[str, int]:
+    if len(sockaddr) < 2:
+        raise ValueError("invalid socket address")
+    return str(sockaddr[0]), int(sockaddr[1])
+
+
+def _sockaddr_for_send(family: int, host: str, port: int) -> tuple[str, int] | tuple[str, int, int, int]:
+    if family == socket.AF_INET6:
+        return (host, port, 0, 0)
+    return (host, port)
+
+
 def _send_http_error(
     connection: socket.socket, *, status: int, reason: str, message: str
 ) -> None:
@@ -788,7 +820,8 @@ class SOCKS5ProxyServer:
         self.bind_port = bind_port
 
     def serve_forever(self) -> None:
-        server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        family = _listener_family_for_host(self.bind_host)
+        server_socket = socket.socket(family, socket.SOCK_STREAM)
         server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         server_socket.bind((self.bind_host, self.bind_port))
         server_socket.listen(128)
@@ -812,22 +845,29 @@ class SOCKS5ProxyServer:
     ) -> None:
         stop_event = Event()
         relay_error: list[Exception] = []
-        expected_client_addr: tuple[str, int] | None = None
+        expected_client_addr: tuple[str, int] | tuple[str, int, int, int] | None = None
+        expected_client_host_port: tuple[str, int] | None = None
+        udp_family = getattr(udp_socket, "family", socket.AF_INET)
         if request.remote_port != 0 and not _is_unspecified_address(request.remote_host):
-            expected_client_addr = (request.remote_host, request.remote_port)
+            expected_client_host_port = (request.remote_host, request.remote_port)
+            expected_client_addr = _sockaddr_for_send(
+                udp_family, request.remote_host, request.remote_port
+            )
 
         def _udp_to_tunnel() -> None:
             nonlocal expected_client_addr
+            nonlocal expected_client_host_port
             try:
                 while not stop_event.is_set():
                     try:
                         payload, sender = udp_socket.recvfrom(65535)
                     except socket.timeout:
                         continue
-                    sender_addr = (sender[0], sender[1])
-                    if expected_client_addr is None:
-                        expected_client_addr = sender_addr
-                    elif sender_addr != expected_client_addr:
+                    sender_addr = (str(sender[0]), int(sender[1]))
+                    if expected_client_host_port is None:
+                        expected_client_host_port = sender_addr
+                        expected_client_addr = sender
+                    elif sender_addr != expected_client_host_port:
                         continue
                     try:
                         datagram = parse_socks5_udp_datagram(payload)
@@ -904,6 +944,11 @@ class SOCKS5ProxyServer:
         with connection:
             connection.settimeout(10.0)
             try:
+                try:
+                    local_host, _local_port = _sockaddr_host_port(connection.getsockname())
+                except (OSError, ValueError, TypeError):
+                    local_host = self.bind_host
+
                 methods = read_socks5_greeting(connection)
                 if SOCKS5_METHOD_NO_AUTH not in methods:
                     connection.sendall(build_socks5_method_selection(SOCKS5_METHOD_NO_ACCEPTABLE))
@@ -913,15 +958,16 @@ class SOCKS5ProxyServer:
                 request = read_socks5_request(connection)
                 if request.command == SOCKS5_CMD_CONNECT:
                     stream_id = self.client.open_stream(request.remote_host, request.remote_port)
-                    connection.sendall(build_socks5_reply(SOCKS5_REPLY_SUCCEEDED))
+                    connection.sendall(build_socks5_reply(SOCKS5_REPLY_SUCCEEDED, bind_host=local_host))
                     connection.settimeout(PROXY_SOCKET_POLL_TIMEOUT_S)
                     _relay_stream(self.client, connection, stream_id, b"")
                 elif request.command == SOCKS5_CMD_UDP_ASSOCIATE:
                     stream_id = self.client.open_datagram()
-                    udp_bind_host = connection.getsockname()[0]
-                    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as udp_socket:
+                    udp_bind_host = local_host
+                    udp_family = _listener_family_for_host(udp_bind_host)
+                    with socket.socket(udp_family, socket.SOCK_DGRAM) as udp_socket:
                         udp_socket.bind((udp_bind_host, 0))
-                        bind_host, bind_port = udp_socket.getsockname()
+                        bind_host, bind_port = _sockaddr_host_port(udp_socket.getsockname())
                         connection.sendall(
                             build_socks5_reply(
                                 SOCKS5_REPLY_SUCCEEDED,
@@ -945,7 +991,7 @@ class SOCKS5ProxyServer:
                     exc,
                 )
                 try:
-                    connection.sendall(build_socks5_reply(exc.reply_code))
+                    connection.sendall(build_socks5_reply(exc.reply_code, bind_host=local_host))
                 except OSError:
                     pass
             except TimeoutError as exc:
@@ -956,7 +1002,7 @@ class SOCKS5ProxyServer:
                     exc,
                 )
                 try:
-                    connection.sendall(build_socks5_reply(SOCKS5_REPLY_TTL_EXPIRED))
+                    connection.sendall(build_socks5_reply(SOCKS5_REPLY_TTL_EXPIRED, bind_host=local_host))
                 except OSError:
                     pass
             except RuntimeError as exc:
@@ -967,7 +1013,9 @@ class SOCKS5ProxyServer:
                     exc,
                 )
                 try:
-                    connection.sendall(build_socks5_reply(SOCKS5_REPLY_HOST_UNREACHABLE))
+                    connection.sendall(
+                        build_socks5_reply(SOCKS5_REPLY_HOST_UNREACHABLE, bind_host=local_host)
+                    )
                 except OSError:
                     pass
             except OSError:

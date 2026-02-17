@@ -25,7 +25,12 @@ from icmp_proxy.protocol import DatagramPacket
 
 
 class FakeConnection:
-    def __init__(self, chunks: list[bytes], *, sockname: tuple[str, int] = ("127.0.0.1", 1080)) -> None:
+    def __init__(
+        self,
+        chunks: list[bytes],
+        *,
+        sockname: tuple[object, ...] = ("127.0.0.1", 1080),
+    ) -> None:
         self._buffer = bytearray().join(chunks)
         self.sent = bytearray()
         self.timeout: float | None = None
@@ -43,7 +48,7 @@ class FakeConnection:
     def settimeout(self, timeout: float) -> None:
         self.timeout = timeout
 
-    def getsockname(self) -> tuple[str, int]:
+    def getsockname(self) -> tuple[object, ...]:
         return self._sockname
 
     def recv(self, size: int) -> bytes:
@@ -124,6 +129,15 @@ class FakeUDPBindSocket:
 
     def settimeout(self, timeout: float) -> None:
         self.timeout = timeout
+
+
+class FakeUDPBindSocketIPv6(FakeUDPBindSocket):
+    def __init__(self) -> None:
+        super().__init__()
+        self.bound = ("::", 0)
+
+    def getsockname(self) -> tuple[str, int, int, int]:
+        return ("::1", 53002, 0, 0)
 
 
 class FakeRelayUDPSocket:
@@ -249,6 +263,11 @@ def test_socks_reply_builders() -> None:
     assert build_socks5_reply(SOCKS5_REPLY_SUCCEEDED, bind_host="127.0.0.1", bind_port=5353) == (
         b"\x05\x00\x00\x01\x7f\x00\x00\x01\x14\xe9"
     )
+    assert build_socks5_reply(SOCKS5_REPLY_SUCCEEDED, bind_host="::1", bind_port=5353) == (
+        b"\x05\x00\x00\x04"
+        + socket.inet_pton(socket.AF_INET6, "::1")
+        + b"\x14\xe9"
+    )
 
 
 def test_socks_udp_datagram_round_trip() -> None:
@@ -288,7 +307,10 @@ def test_socks5_proxy_server_success_handshake(monkeypatch) -> None:
     )
     server._handle_connection(connection, ("127.0.0.1", 5555))  # type: ignore[arg-type]
 
-    assert bytes(connection.sent) == b"\x05\x00\x05\x00\x00\x01\x00\x00\x00\x00\x00\x00"
+    assert bytes(connection.sent) == b"\x05\x00" + build_socks5_reply(
+        SOCKS5_REPLY_SUCCEEDED,
+        bind_host="127.0.0.1",
+    )
     assert fake_client.opened == [("example.com", 443)]
     assert fake_client.closed == [77]
     assert relay_calls == [(77, b"")]
@@ -305,7 +327,10 @@ def test_socks5_proxy_server_open_failure_returns_reply() -> None:
     )
     server._handle_connection(connection, ("127.0.0.1", 5556))  # type: ignore[arg-type]
 
-    assert bytes(connection.sent) == b"\x05\x00" + build_socks5_reply(SOCKS5_REPLY_HOST_UNREACHABLE)
+    assert bytes(connection.sent) == b"\x05\x00" + build_socks5_reply(
+        SOCKS5_REPLY_HOST_UNREACHABLE,
+        bind_host="127.0.0.1",
+    )
     assert fake_client.closed == []
 
 
@@ -343,6 +368,46 @@ def test_socks5_proxy_server_udp_associate_handshake(monkeypatch) -> None:
         SOCKS5_REPLY_SUCCEEDED,
         bind_host="127.0.0.1",
         bind_port=53000,
+    )
+    assert fake_client.opened_datagram == 1
+    assert fake_client.closed == [88]
+    assert relay_calls == [88]
+
+
+def test_socks5_proxy_server_udp_associate_handshake_ipv6(monkeypatch) -> None:
+    fake_client = FakeClient()
+    server = SOCKS5ProxyServer(fake_client, bind_host="::1", bind_port=1080)
+    udp_socket = FakeUDPBindSocketIPv6()
+    relay_calls: list[int] = []
+
+    def _fake_socket(family: int, socktype: int, proto: int = 0):
+        _ = proto
+        if family == socket.AF_INET6 and socktype == socket.SOCK_DGRAM:
+            return udp_socket
+        raise AssertionError("unexpected socket constructor call")
+
+    def _fake_relay(connection, local_udp_socket, stream_id: int, request: SOCKS5Request) -> None:
+        _ = connection
+        _ = local_udp_socket
+        _ = request
+        relay_calls.append(stream_id)
+
+    monkeypatch.setattr("icmp_proxy.client.socket.socket", _fake_socket)
+    monkeypatch.setattr(server, "_relay_udp_associate", _fake_relay)
+
+    connection = FakeConnection(
+        [
+            b"\x05\x01\x00",
+            _build_domain_udp_associate_request("::", 0),
+        ],
+        sockname=("::1", 1080, 0, 0),
+    )
+    server._handle_connection(connection, ("::1", 5557))  # type: ignore[arg-type]
+
+    assert bytes(connection.sent) == b"\x05\x00" + build_socks5_reply(
+        SOCKS5_REPLY_SUCCEEDED,
+        bind_host="::1",
+        bind_port=53002,
     )
     assert fake_client.opened_datagram == 1
     assert fake_client.closed == [88]
