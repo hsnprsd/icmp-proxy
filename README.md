@@ -13,8 +13,46 @@ Wire protocol, message formats, and module/CLI interfaces may break between comm
 
 ## Configuration
 
-The runtime is configured through environment variables:
+Configuration is loaded with this precedence (lowest to highest):
 
+1. Built-in defaults
+2. `config.ini` in the current working directory
+3. Environment variables (`ICMP_PROXY_*`)
+
+Set `ICMP_PROXY_CONFIG_FILE` to load a specific INI path instead of `./config.ini`.
+If `ICMP_PROXY_CONFIG_FILE` is set and the file does not exist, startup fails.
+
+Example `config.ini`:
+
+```ini
+[common]
+log_level = info
+psk_file = ./psk.txt
+client_id = default-client
+
+[session]
+max_inflight_per_stream = 1024
+min_inflight_per_stream = 32
+max_global_inflight = 2048
+mtu_payload = 1200
+
+[server]
+bind_host = 0.0.0.0
+client_host = 127.0.0.1
+max_streams = 512
+
+[client]
+server_host = 127.0.0.1
+http_proxy_bind_host = 127.0.0.1
+http_proxy_bind_port = 8080
+socks_proxy_enable = 1
+socks_proxy_bind_host = 127.0.0.1
+socks_proxy_bind_port = 1080
+```
+
+Supported environment variables:
+
+- `ICMP_PROXY_CONFIG_FILE` (optional INI path override)
 - `ICMP_PROXY_PSK_FILE` (default: `./psk.txt`)
 - `ICMP_PROXY_CLIENT_ID` (default: `default-client`)
 - `ICMP_PROXY_REMOTE_HOST` (client-side, default: `127.0.0.1`)

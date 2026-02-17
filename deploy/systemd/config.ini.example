@@ -1,0 +1,40 @@
+[common]
+log_level = info
+psk_file = /etc/icmp-proxy/psk.txt
+client_id = default-client
+auth_skew_ms = 30000
+auth_replay_ttl_ms = 30000
+auth_replay_max_entries = 8192
+
+[session]
+retx_timeout_ms = 100
+retx_max_retries = 5
+retx_scan_interval_ms = 20
+seen_limit_per_stream = 1024
+max_inflight_per_stream = 1024
+min_inflight_per_stream = 32
+max_global_inflight = 2048
+mtu_payload = 1200
+flowcontrol_enable = 1
+flowcontrol_alpha = 0.125
+flowcontrol_beta = 0.25
+flowcontrol_increase_step = 8
+flowcontrol_decrease_factor = 0.7
+flowcontrol_loss_threshold = 0.02
+stats_interval_ms = 1000
+performance_metrics_enable = 0
+
+[server]
+bind_host = 0.0.0.0
+client_host = 127.0.0.1
+max_streams = 512
+target_connect_timeout_ms = 3000
+stream_idle_timeout_ms = 60000
+
+[client]
+server_host = 127.0.0.1
+http_proxy_bind_host = 127.0.0.1
+http_proxy_bind_port = 8080
+socks_proxy_enable = 1
+socks_proxy_bind_host = 127.0.0.1
+socks_proxy_bind_port = 1080
