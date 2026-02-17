@@ -1,7 +1,7 @@
 # ICMP Proxy
 
 Production-oriented ICMP tunnel prototype with:
-- Versioned wire protocol (`PROTOCOL_VERSION=1`)
+- Binary wire protocol
 - PSK-authenticated `HELLO`/`HELLO_ACK` handshake
 - Reliable delivery (retransmit + duplicate suppression + ACK via `ack_num`)
 - Stream lifecycle messages: `OPEN_STREAM`, `DATA`, `CLOSE`

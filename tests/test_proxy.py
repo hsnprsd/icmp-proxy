@@ -13,7 +13,6 @@ from icmp_proxy.protocol import (
     OpenErr,
     OpenOk,
     OpenStream,
-    UnsupportedProtocolVersion,
 )
 
 
@@ -29,14 +28,6 @@ def test_frame_round_trip() -> None:
     )
     decoded = Frame.decode(frame.encode())
     assert decoded == frame
-
-
-def test_frame_decode_rejects_unknown_version() -> None:
-    frame = Frame.make(msg_type=MessageType.KEEPALIVE, payload=b"", session_id=1)
-    raw = bytearray(frame.encode())
-    raw[0] = 2
-    with pytest.raises(UnsupportedProtocolVersion):
-        Frame.decode(bytes(raw))
 
 
 def test_frame_decode_rejects_payload_length_mismatch() -> None:

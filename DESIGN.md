@@ -48,13 +48,8 @@ The tunnel uses raw ICMP sockets (`socket.AF_INET`, `socket.SOCK_RAW`, `socket.I
 
 ## Wire Protocol
 
-### Protocol Version
-- `PROTOCOL_VERSION = 1`.
-- Frame decode rejects mismatched versions.
-
 ### Frame Header
 All tunnel messages are sent in `Frame`:
-- `version` (`u8`)
 - `flags` (`u8`)
 - `msg_type` (`u8`)
 - `reserved` (`u8`)

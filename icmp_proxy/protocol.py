@@ -5,7 +5,6 @@ import struct
 from dataclasses import dataclass
 from enum import IntEnum
 
-PROTOCOL_VERSION = 1
 NONCE_LEN = 16
 HMAC_LEN = 32
 MAX_PAYLOAD_LEN = (1 << 16) - 1
@@ -27,7 +26,7 @@ class MessageType(IntEnum):
 FLAG_RELIABLE = 0x01
 FLAG_FRAGMENTED = 0x02
 
-FRAME_HEADER_STRUCT = struct.Struct("!BBBBIIIIH")
+FRAME_HEADER_STRUCT = struct.Struct("!BBBIIIIH")
 FRAME_HEADER_LEN = FRAME_HEADER_STRUCT.size
 
 
@@ -47,13 +46,8 @@ def _unpack_u8_len_bytes(buf: bytes, *, label: str) -> tuple[bytes, bytes]:
     return buf[:size], buf[size:]
 
 
-class UnsupportedProtocolVersion(ValueError):
-    pass
-
-
 @dataclass(frozen=True)
 class Frame:
-    version: int
     flags: int
     msg_type: MessageType
     reserved: int
@@ -68,7 +62,6 @@ class Frame:
         if payload_len > MAX_PAYLOAD_LEN:
             raise ValueError("payload too large")
         return FRAME_HEADER_STRUCT.pack(
-            self.version,
             self.flags,
             int(self.msg_type),
             self.reserved,
@@ -84,7 +77,6 @@ class Frame:
         if len(data) < FRAME_HEADER_LEN:
             raise ValueError("frame too short")
         (
-            version,
             flags,
             msg_type_raw,
             reserved,
@@ -94,10 +86,6 @@ class Frame:
             ack_num,
             payload_len,
         ) = FRAME_HEADER_STRUCT.unpack(data[:FRAME_HEADER_LEN])
-        if version != PROTOCOL_VERSION:
-            raise UnsupportedProtocolVersion(
-                f"unsupported protocol version: {version}"
-            )
         try:
             msg_type = MessageType(msg_type_raw)
         except ValueError as exc:
@@ -107,7 +95,6 @@ class Frame:
             raise ValueError("frame payload length mismatch")
         payload = data[FRAME_HEADER_LEN:]
         return Frame(
-            version=version,
             flags=flags,
             msg_type=msg_type,
             reserved=reserved,
@@ -131,7 +118,6 @@ class Frame:
         reserved: int = 0,
     ) -> "Frame":
         return Frame(
-            version=PROTOCOL_VERSION,
             flags=flags,
             msg_type=msg_type,
             reserved=reserved,
