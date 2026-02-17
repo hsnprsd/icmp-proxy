@@ -1,3 +1,4 @@
+import os
 import socket
 import threading
 import time
@@ -7,6 +8,8 @@ from typing import Callable
 
 from icmp import ICMPPacket
 from proxy import Frame, FrameType, ProxyAck
+
+MAX_SEQUENCE_NUMBER = (1 << 32) - 1
 
 
 @dataclass
@@ -49,7 +52,9 @@ class ReliableICMPSession:
         self._received_cv = threading.Condition()
         self._stop_event = threading.Event()
 
-        self._next_seq_num = 1
+        self._next_seq_num = int.from_bytes(os.urandom(4), byteorder="big")
+        if self._next_seq_num == 0:
+            self._next_seq_num = 1
         self._pending: dict[tuple[int, int], PendingFrame] = {}
         self._seen: dict[int, OrderedDict[int, None]] = {}
         self._received: deque[Frame] = deque()
@@ -160,6 +165,8 @@ class ReliableICMPSession:
         with self._state_lock:
             seq_num = self._next_seq_num
             self._next_seq_num += 1
+            if self._next_seq_num > MAX_SEQUENCE_NUMBER:
+                self._next_seq_num = 1
             return seq_num
 
     def _send_frame(self, frame: Frame) -> None:
