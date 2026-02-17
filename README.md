@@ -6,6 +6,10 @@ Production-oriented ICMP tunnel prototype with:
 - Reliable delivery (retransmit + duplicate suppression + ACK via `ack_num`)
 - Stream lifecycle messages: `OPEN_STREAM`, `DATA`, `CLOSE`
 
+## Documentation
+
+- Design document: [`DESIGN.md`](DESIGN.md)
+
 ## Compatibility Policy
 
 During active development, backward compatibility is intentionally not preserved.
