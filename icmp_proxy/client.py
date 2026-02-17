@@ -35,6 +35,19 @@ LOGGER = logging.getLogger("icmp_proxy.client")
 HTTP_HEADER_TERMINATOR = b"\r\n\r\n"
 MAX_HTTP_HEADER_BYTES = 64 * 1024
 PROXY_SOCKET_POLL_TIMEOUT_S = 0.5
+SOCKS_VERSION = 0x05
+SOCKS5_METHOD_NO_AUTH = 0x00
+SOCKS5_METHOD_NO_ACCEPTABLE = 0xFF
+SOCKS5_CMD_CONNECT = 0x01
+SOCKS5_ATYP_IPV4 = 0x01
+SOCKS5_ATYP_DOMAIN = 0x03
+SOCKS5_ATYP_IPV6 = 0x04
+SOCKS5_REPLY_SUCCEEDED = 0x00
+SOCKS5_REPLY_GENERAL_FAILURE = 0x01
+SOCKS5_REPLY_HOST_UNREACHABLE = 0x04
+SOCKS5_REPLY_TTL_EXPIRED = 0x06
+SOCKS5_REPLY_COMMAND_NOT_SUPPORTED = 0x07
+SOCKS5_REPLY_ADDRESS_TYPE_NOT_SUPPORTED = 0x08
 
 
 def configure_logging(level_name: str) -> None:
@@ -51,6 +64,18 @@ class ProxyRequest:
     remote_host: str
     remote_port: int
     rewritten_head: bytes | None
+
+
+@dataclass(frozen=True)
+class SOCKS5ConnectRequest:
+    remote_host: str
+    remote_port: int
+
+
+class SOCKS5ProtocolError(ValueError):
+    def __init__(self, message: str, *, reply_code: int = SOCKS5_REPLY_GENERAL_FAILURE) -> None:
+        super().__init__(message)
+        self.reply_code = reply_code
 
 
 def _parse_authority(authority: str, default_port: int) -> tuple[str, int]:
@@ -197,6 +222,122 @@ def read_http_request_head(connection: socket.socket) -> tuple[bytes, bytes]:
     raise ValueError("HTTP request headers too large or truncated")
 
 
+def _recv_exact(connection: socket.socket, size: int) -> bytes:
+    if size <= 0:
+        return b""
+    buffer = bytearray()
+    while len(buffer) < size:
+        chunk = connection.recv(size - len(buffer))
+        if not chunk:
+            raise SOCKS5ProtocolError("truncated SOCKS payload")
+        buffer.extend(chunk)
+    return bytes(buffer)
+
+
+def read_socks5_greeting(connection: socket.socket) -> bytes:
+    header = _recv_exact(connection, 2)
+    version, methods_len = header[0], header[1]
+    if version != SOCKS_VERSION:
+        raise SOCKS5ProtocolError("unsupported SOCKS version")
+    methods = _recv_exact(connection, methods_len)
+    return methods
+
+
+def parse_socks5_connect_request(payload: bytes) -> SOCKS5ConnectRequest:
+    if len(payload) < 4:
+        raise SOCKS5ProtocolError("truncated SOCKS CONNECT request")
+
+    version, command, reserved, address_type = payload[0], payload[1], payload[2], payload[3]
+    if version != SOCKS_VERSION:
+        raise SOCKS5ProtocolError("unsupported SOCKS version")
+    if reserved != 0:
+        raise SOCKS5ProtocolError("invalid SOCKS reserved byte")
+    if command != SOCKS5_CMD_CONNECT:
+        raise SOCKS5ProtocolError(
+            "unsupported SOCKS command",
+            reply_code=SOCKS5_REPLY_COMMAND_NOT_SUPPORTED,
+        )
+
+    cursor = 4
+    if address_type == SOCKS5_ATYP_IPV4:
+        if len(payload) < cursor + 4 + 2:
+            raise SOCKS5ProtocolError("truncated IPv4 SOCKS CONNECT request")
+        remote_host = socket.inet_ntoa(payload[cursor : cursor + 4])
+        cursor += 4
+    elif address_type == SOCKS5_ATYP_DOMAIN:
+        if len(payload) < cursor + 1:
+            raise SOCKS5ProtocolError("truncated domain SOCKS CONNECT request")
+        domain_length = payload[cursor]
+        cursor += 1
+        if domain_length == 0:
+            raise SOCKS5ProtocolError("empty SOCKS domain")
+        if len(payload) < cursor + domain_length + 2:
+            raise SOCKS5ProtocolError("truncated domain SOCKS CONNECT request")
+        remote_host = payload[cursor : cursor + domain_length].decode("idna")
+        cursor += domain_length
+    elif address_type == SOCKS5_ATYP_IPV6:
+        if len(payload) < cursor + 16 + 2:
+            raise SOCKS5ProtocolError("truncated IPv6 SOCKS CONNECT request")
+        remote_host = socket.inet_ntop(socket.AF_INET6, payload[cursor : cursor + 16])
+        cursor += 16
+    else:
+        raise SOCKS5ProtocolError(
+            "unsupported SOCKS address type",
+            reply_code=SOCKS5_REPLY_ADDRESS_TYPE_NOT_SUPPORTED,
+        )
+
+    remote_port = int.from_bytes(payload[cursor : cursor + 2], byteorder="big")
+    if remote_port == 0:
+        raise SOCKS5ProtocolError("invalid SOCKS destination port")
+    cursor += 2
+    if cursor != len(payload):
+        raise SOCKS5ProtocolError("invalid trailing bytes in SOCKS CONNECT request")
+
+    return SOCKS5ConnectRequest(remote_host=remote_host, remote_port=remote_port)
+
+
+def read_socks5_connect_request(connection: socket.socket) -> SOCKS5ConnectRequest:
+    header = _recv_exact(connection, 4)
+    address_type = header[3]
+    payload = bytearray(header)
+    if address_type == SOCKS5_ATYP_IPV4:
+        payload.extend(_recv_exact(connection, 4))
+    elif address_type == SOCKS5_ATYP_DOMAIN:
+        domain_length_raw = _recv_exact(connection, 1)
+        payload.extend(domain_length_raw)
+        payload.extend(_recv_exact(connection, domain_length_raw[0]))
+    elif address_type == SOCKS5_ATYP_IPV6:
+        payload.extend(_recv_exact(connection, 16))
+    else:
+        raise SOCKS5ProtocolError(
+            "unsupported SOCKS address type",
+            reply_code=SOCKS5_REPLY_ADDRESS_TYPE_NOT_SUPPORTED,
+        )
+    payload.extend(_recv_exact(connection, 2))
+    return parse_socks5_connect_request(bytes(payload))
+
+
+def build_socks5_method_selection(method: int) -> bytes:
+    return bytes([SOCKS_VERSION, method])
+
+
+def build_socks5_reply(reply_code: int) -> bytes:
+    return bytes(
+        [
+            SOCKS_VERSION,
+            reply_code,
+            0x00,
+            SOCKS5_ATYP_IPV4,
+            0x00,
+            0x00,
+            0x00,
+            0x00,
+            0x00,
+            0x00,
+        ]
+    )
+
+
 def _send_http_error(
     connection: socket.socket, *, status: int, reason: str, message: str
 ) -> None:
@@ -212,6 +353,52 @@ def _send_http_error(
         connection.sendall(response)
     except OSError:
         pass
+
+
+def _relay_stream(client: Client, connection: socket.socket, stream_id: int, initial_upstream: bytes) -> None:
+    stop_event = Event()
+    relay_error: list[Exception] = []
+
+    def _client_to_upstream() -> None:
+        try:
+            if initial_upstream:
+                client.send_stream_data(stream_id, initial_upstream)
+            while not stop_event.is_set():
+                try:
+                    chunk = connection.recv(4096)
+                except socket.timeout:
+                    continue
+                if not chunk:
+                    break
+                client.send_stream_data(stream_id, chunk)
+        except Exception as exc:
+            relay_error.append(exc)
+        finally:
+            stop_event.set()
+
+    upload_thread = Thread(target=_client_to_upstream, daemon=True)
+    upload_thread.start()
+    try:
+        while not stop_event.is_set():
+            chunk, closed = client.recv_stream_chunk(
+                stream_id=stream_id,
+                timeout_s=PROXY_SOCKET_POLL_TIMEOUT_S,
+            )
+            if chunk is None:
+                continue
+            if closed:
+                break
+            if chunk:
+                connection.sendall(chunk)
+    finally:
+        stop_event.set()
+        upload_thread.join(timeout=1.0)
+
+    if relay_error:
+        error = relay_error[0]
+        if isinstance(error, (TimeoutError, RuntimeError, OSError)):
+            raise error
+        raise RuntimeError("proxy relay failed") from error
 
 
 class Client:
@@ -417,7 +604,7 @@ class HTTPProxyServer:
                         raise ValueError("failed to build upstream HTTP request")
                     initial_upstream = parsed.rewritten_head + remainder
 
-                self._relay_stream(connection, stream_id, initial_upstream)
+                _relay_stream(self.client, connection, stream_id, initial_upstream)
             except ValueError as exc:
                 LOGGER.warning(
                     "invalid proxy request from %s:%d: %s",
@@ -466,52 +653,124 @@ class HTTPProxyServer:
                     except Exception:
                         self.client.reliable.clear_stream_state(stream_id)
 
-    def _relay_stream(
-        self, connection: socket.socket, stream_id: int, initial_upstream: bytes
-    ) -> None:
-        stop_event = Event()
-        relay_error: list[Exception] = []
 
-        def _client_to_upstream() -> None:
+class SOCKS5ProxyServer:
+    def __init__(self, client: Client, bind_host: str, bind_port: int) -> None:
+        self.client = client
+        self.bind_host = bind_host
+        self.bind_port = bind_port
+
+    def serve_forever(self) -> None:
+        server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        server_socket.bind((self.bind_host, self.bind_port))
+        server_socket.listen(128)
+        LOGGER.info("SOCKS5 proxy listening on %s:%d", self.bind_host, self.bind_port)
+
+        with server_socket:
+            while True:
+                connection, address = server_socket.accept()
+                Thread(
+                    target=self._handle_connection,
+                    args=(connection, address),
+                    daemon=True,
+                ).start()
+
+    def _handle_connection(self, connection: socket.socket, address: tuple[str, int]) -> None:
+        stream_id: int | None = None
+        with connection:
+            connection.settimeout(10.0)
             try:
-                if initial_upstream:
-                    self.client.send_stream_data(stream_id, initial_upstream)
-                while not stop_event.is_set():
-                    try:
-                        chunk = connection.recv(4096)
-                    except socket.timeout:
-                        continue
-                    if not chunk:
-                        break
-                    self.client.send_stream_data(stream_id, chunk)
-            except Exception as exc:
-                relay_error.append(exc)
-            finally:
-                stop_event.set()
+                methods = read_socks5_greeting(connection)
+                if SOCKS5_METHOD_NO_AUTH not in methods:
+                    connection.sendall(build_socks5_method_selection(SOCKS5_METHOD_NO_ACCEPTABLE))
+                    return
+                connection.sendall(build_socks5_method_selection(SOCKS5_METHOD_NO_AUTH))
 
-        upload_thread = Thread(target=_client_to_upstream, daemon=True)
-        upload_thread.start()
-        try:
-            while not stop_event.is_set():
-                chunk, closed = self.client.recv_stream_chunk(
-                    stream_id=stream_id,
-                    timeout_s=PROXY_SOCKET_POLL_TIMEOUT_S,
+                request = read_socks5_connect_request(connection)
+                stream_id = self.client.open_stream(request.remote_host, request.remote_port)
+                connection.sendall(build_socks5_reply(SOCKS5_REPLY_SUCCEEDED))
+                connection.settimeout(PROXY_SOCKET_POLL_TIMEOUT_S)
+                _relay_stream(self.client, connection, stream_id, b"")
+            except SOCKS5ProtocolError as exc:
+                LOGGER.warning(
+                    "invalid SOCKS5 request from %s:%d: %s",
+                    address[0],
+                    address[1],
+                    exc,
                 )
-                if chunk is None:
-                    continue
-                if closed:
-                    break
-                if chunk:
-                    connection.sendall(chunk)
-        finally:
-            stop_event.set()
-            upload_thread.join(timeout=1.0)
+                try:
+                    connection.sendall(build_socks5_reply(exc.reply_code))
+                except OSError:
+                    pass
+            except TimeoutError as exc:
+                LOGGER.warning(
+                    "timeout while proxying SOCKS5 request from %s:%d: %s",
+                    address[0],
+                    address[1],
+                    exc,
+                )
+                try:
+                    connection.sendall(build_socks5_reply(SOCKS5_REPLY_TTL_EXPIRED))
+                except OSError:
+                    pass
+            except RuntimeError as exc:
+                LOGGER.warning(
+                    "SOCKS5 upstream open failed for %s:%d: %s",
+                    address[0],
+                    address[1],
+                    exc,
+                )
+                try:
+                    connection.sendall(build_socks5_reply(SOCKS5_REPLY_HOST_UNREACHABLE))
+                except OSError:
+                    pass
+            except OSError:
+                pass
+            finally:
+                if stream_id is not None:
+                    try:
+                        self.client.close_stream(stream_id)
+                    except Exception:
+                        self.client.reliable.clear_stream_state(stream_id)
 
-        if relay_error:
-            error = relay_error[0]
-            if isinstance(error, (TimeoutError, RuntimeError, OSError)):
-                raise error
-            raise RuntimeError("proxy relay failed") from error
+
+def _run_proxy_servers(client: Client, config: ClientConfig) -> None:
+    listeners = [
+        (
+            "http",
+            HTTPProxyServer(
+                client=client,
+                bind_host=config.http_proxy_bind_host,
+                bind_port=config.http_proxy_bind_port,
+            ),
+        ),
+    ]
+    if config.socks_proxy_enable:
+        listeners.append(
+            (
+                "socks5",
+                SOCKS5ProxyServer(
+                    client=client,
+                    bind_host=config.socks_proxy_bind_host,
+                    bind_port=config.socks_proxy_bind_port,
+                ),
+            )
+        )
+    else:
+        LOGGER.info("SOCKS5 proxy listener disabled")
+
+    listener_threads: list[Thread] = []
+    for name, listener in listeners:
+        thread = Thread(target=listener.serve_forever, daemon=True, name=f"{name}-proxy-listener")
+        thread.start()
+        listener_threads.append(thread)
+
+    while True:
+        for thread in listener_threads:
+            thread.join(timeout=1.0)
+            if not thread.is_alive():
+                raise RuntimeError(f"{thread.name} stopped unexpectedly")
 
 
 def main() -> None:
@@ -519,12 +778,7 @@ def main() -> None:
     configure_logging(config.common.log_level)
     with Client(config) as client:
         client.authenticate()
-        proxy_server = HTTPProxyServer(
-            client=client,
-            bind_host=config.http_proxy_bind_host,
-            bind_port=config.http_proxy_bind_port,
-        )
-        proxy_server.serve_forever()
+        _run_proxy_servers(client, config)
 
 
 if __name__ == "__main__":

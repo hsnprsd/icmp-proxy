@@ -86,6 +86,9 @@ class ClientConfig:
     http_proxy_bind_port: int
     common: CommonConfig
     session: SessionConfig
+    socks_proxy_enable: bool = True
+    socks_proxy_bind_host: str = "127.0.0.1"
+    socks_proxy_bind_port: int = 1080
 
 
 def load_common_config() -> CommonConfig:
@@ -159,4 +162,7 @@ def load_client_config() -> ClientConfig:
         http_proxy_bind_port=_env_int("ICMP_PROXY_HTTP_PROXY_BIND_PORT", 8080),
         common=load_common_config(),
         session=load_session_config(),
+        socks_proxy_enable=_env_bool("ICMP_PROXY_SOCKS_PROXY_ENABLE", True),
+        socks_proxy_bind_host=_env_str("ICMP_PROXY_SOCKS_PROXY_BIND_HOST", "127.0.0.1"),
+        socks_proxy_bind_port=_env_int("ICMP_PROXY_SOCKS_PROXY_BIND_PORT", 1080),
     )

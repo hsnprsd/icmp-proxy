@@ -1,4 +1,4 @@
-from icmp_proxy.config import load_session_config
+from icmp_proxy.config import load_client_config, load_session_config
 
 
 _SESSION_ENV_VARS = [
@@ -20,9 +20,26 @@ _SESSION_ENV_VARS = [
     "ICMP_PROXY_PERFORMANCE_METRICS_ENABLE",
 ]
 
+_CLIENT_ENV_VARS = [
+    "ICMP_PROXY_REMOTE_HOST",
+    "ICMP_PROXY_HTTP_PROXY_BIND_HOST",
+    "ICMP_PROXY_HTTP_PROXY_BIND_PORT",
+    "ICMP_PROXY_SOCKS_PROXY_ENABLE",
+    "ICMP_PROXY_SOCKS_PROXY_BIND_HOST",
+    "ICMP_PROXY_SOCKS_PROXY_BIND_PORT",
+    "ICMP_PROXY_LOG_LEVEL",
+    "ICMP_PROXY_PSK_FILE",
+    "ICMP_PROXY_CLIENT_ID",
+]
+
 
 def _clear_session_env(monkeypatch) -> None:
     for name in _SESSION_ENV_VARS:
+        monkeypatch.delenv(name, raising=False)
+
+
+def _clear_client_env(monkeypatch) -> None:
+    for name in _CLIENT_ENV_VARS:
         monkeypatch.delenv(name, raising=False)
 
 
@@ -79,3 +96,26 @@ def test_load_session_config_enables_performance_metrics(monkeypatch) -> None:
     config = load_session_config()
 
     assert config.performance_metrics_enable is True
+
+
+def test_load_client_config_socks_defaults(monkeypatch) -> None:
+    _clear_client_env(monkeypatch)
+
+    config = load_client_config()
+
+    assert config.socks_proxy_enable is True
+    assert config.socks_proxy_bind_host == "127.0.0.1"
+    assert config.socks_proxy_bind_port == 1080
+
+
+def test_load_client_config_socks_overrides(monkeypatch) -> None:
+    _clear_client_env(monkeypatch)
+    monkeypatch.setenv("ICMP_PROXY_SOCKS_PROXY_ENABLE", "0")
+    monkeypatch.setenv("ICMP_PROXY_SOCKS_PROXY_BIND_HOST", "0.0.0.0")
+    monkeypatch.setenv("ICMP_PROXY_SOCKS_PROXY_BIND_PORT", "11080")
+
+    config = load_client_config()
+
+    assert config.socks_proxy_enable is False
+    assert config.socks_proxy_bind_host == "0.0.0.0"
+    assert config.socks_proxy_bind_port == 11080
