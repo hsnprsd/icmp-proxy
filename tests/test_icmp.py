@@ -1,11 +1,10 @@
 import pytest
 
-from icmp import (
+from icmp_proxy.icmp import (
     ICMP_ECHO_REQUEST,
     ICMP_ECHO_REQUEST_CODE,
     ICMPPacket,
-    icmp_echo_request,
-    inernet_checksum,
+    internet_checksum,
 )
 
 
@@ -18,11 +17,11 @@ def _ipv4_wrap(icmp_payload: bytes) -> bytes:
 
 def test_internet_checksum_known_value() -> None:
     data = bytes.fromhex("0001f203f4f5f6f7")
-    assert inernet_checksum(data) == 0x220D
+    assert internet_checksum(data) == 0x220D
 
 
 def test_internet_checksum_odd_length_data() -> None:
-    assert inernet_checksum(b"abc") == 0x3B9D
+    assert internet_checksum(b"abc") == 0x3B9D
 
 
 def test_icmp_packet_round_trip_from_bytes() -> None:
@@ -42,14 +41,10 @@ def test_icmp_packet_from_bytes_rejects_invalid_checksum() -> None:
     tampered = bytearray(packet.to_bytes())
     tampered[2] ^= 0xFF
 
-    with pytest.raises(Exception, match="invalid checksum"):
+    with pytest.raises(ValueError, match="invalid checksum"):
         ICMPPacket.from_bytes(_ipv4_wrap(bytes(tampered)))
 
 
-def test_icmp_echo_request_factory_sets_constants() -> None:
-    payload = b"data"
-    packet = icmp_echo_request(payload)
-
-    assert packet.icmp_type == ICMP_ECHO_REQUEST
-    assert packet.icmp_code == ICMP_ECHO_REQUEST_CODE
-    assert packet.payload == payload
+def test_icmp_constants() -> None:
+    assert ICMP_ECHO_REQUEST == 8
+    assert ICMP_ECHO_REQUEST_CODE == 0

@@ -39,11 +39,15 @@ def require_icmp_echo_ignored() -> None:
 
 @pytest.fixture
 def icmp_server_process(require_root: None, require_icmp_echo_ignored: None):
+    psk_file = PROJECT_ROOT / ".test-psk"
+    psk_file.write_text("test-secret\n", encoding="utf-8")
     env = os.environ.copy()
-    env.setdefault("LOG_LEVEL", "WARNING")
+    env.setdefault("ICMP_PROXY_LOG_LEVEL", "WARNING")
+    env.setdefault("ICMP_PROXY_PSK_FILE", str(psk_file))
+    env.setdefault("ICMP_PROXY_CLIENT_ID", "test-client")
 
     process = subprocess.Popen(
-        [sys.executable, "server.py"],
+        [sys.executable, "-m", "icmp_proxy.server"],
         cwd=PROJECT_ROOT,
         env=env,
         stdout=subprocess.DEVNULL,
@@ -58,7 +62,7 @@ def icmp_server_process(require_root: None, require_icmp_echo_ignored: None):
             if process.stderr is not None:
                 stderr = process.stderr.read()
             raise RuntimeError(
-                f"server.py exited early with code {process.returncode}: {stderr}"
+                f"icmp_proxy.server exited early with code {process.returncode}: {stderr}"
             )
         time.sleep(0.05)
 
@@ -72,6 +76,10 @@ def icmp_server_process(require_root: None, require_icmp_echo_ignored: None):
             except subprocess.TimeoutExpired:
                 process.kill()
                 process.wait(timeout=2.0)
+        try:
+            psk_file.unlink()
+        except OSError:
+            pass
 
 
 @pytest.fixture

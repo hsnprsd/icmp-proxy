@@ -1,71 +1,89 @@
 import pytest
 
-from proxy import (
+from icmp_proxy.protocol import (
+    Close,
+    CloseAck,
+    Data,
     Frame,
-    FrameType,
-    ProxyAck,
-    ProxyClose,
-    ProxyData,
-    ProxyStart,
-    ProxyStartResponse,
+    Hello,
+    HelloAck,
+    MessageType,
+    OpenErr,
+    OpenOk,
+    OpenStream,
+    UnsupportedProtocolVersion,
 )
 
 
-def test_frame_round_trip_for_all_frame_types() -> None:
-    for frame_type in FrameType:
-        frame = Frame(
-            from_host=1,
-            frame_type=frame_type,
-            stream_id=12345,
-            seq_num=99,
-            payload=b"payload",
-        )
-        decoded = Frame.decode(frame.encode())
-        assert decoded == frame
+def test_frame_round_trip() -> None:
+    frame = Frame.make(
+        msg_type=MessageType.DATA,
+        payload=b"hello",
+        session_id=7,
+        stream_id=8,
+        seq_num=11,
+        ack_num=10,
+        flags=0x01,
+    )
+    decoded = Frame.decode(frame.encode())
+    assert decoded == frame
 
 
-def test_frame_decode_rejects_short_payload() -> None:
-    with pytest.raises(ValueError, match="frame too short"):
-        Frame.decode(b"\x00" * 9)
+def test_frame_decode_rejects_unknown_version() -> None:
+    frame = Frame.make(msg_type=MessageType.KEEPALIVE, payload=b"", session_id=1)
+    raw = bytearray(frame.encode())
+    raw[0] = 2
+    with pytest.raises(UnsupportedProtocolVersion):
+        Frame.decode(bytes(raw))
 
 
-def test_proxy_start_round_trip() -> None:
-    start = ProxyStart(remote_host="example.com", remote_port=443)
-    decoded = ProxyStart.decode(start.encode())
-    assert decoded == start
+def test_frame_decode_rejects_payload_length_mismatch() -> None:
+    frame = Frame.make(msg_type=MessageType.DATA, payload=b"abc", session_id=1)
+    raw = frame.encode() + b"\x00"
+    with pytest.raises(ValueError, match="payload length mismatch"):
+        Frame.decode(raw)
 
 
-def test_proxy_start_response_round_trip() -> None:
-    response = ProxyStartResponse(stream_id=0xABCDEF01)
-    decoded = ProxyStartResponse.decode(response.encode())
-    assert decoded == response
+def test_hello_round_trip() -> None:
+    hello = Hello(
+        client_id="client-a",
+        nonce=b"a" * 16,
+        timestamp_ms=123456789,
+        hmac_sha256=b"h" * 32,
+    )
+    assert Hello.decode(hello.encode()) == hello
 
 
-def test_proxy_data_round_trip_with_empty_payload() -> None:
-    data = ProxyData(size=0, payload=b"")
-    decoded = ProxyData.decode(data.encode())
-    assert decoded == data
+def test_hello_ack_round_trip() -> None:
+    hello_ack = HelloAck(server_nonce=b"b" * 16, timestamp_ms=123, hmac_sha256=b"c" * 32)
+    assert HelloAck.decode(hello_ack.encode()) == hello_ack
 
 
-def test_proxy_data_round_trip_with_payload() -> None:
-    payload = b"hello"
-    data = ProxyData(size=len(payload), payload=payload)
-    decoded = ProxyData.decode(data.encode())
-    assert decoded == data
+def test_open_stream_round_trip() -> None:
+    open_stream = OpenStream(remote_host="example.com", remote_port=443)
+    assert OpenStream.decode(open_stream.encode()) == open_stream
 
 
-def test_proxy_close_round_trip() -> None:
-    close = ProxyClose()
-    decoded = ProxyClose.decode(close.encode())
-    assert isinstance(decoded, ProxyClose)
+def test_open_ok_round_trip() -> None:
+    open_ok = OpenOk(assigned_stream_id=12345)
+    assert OpenOk.decode(open_ok.encode()) == open_ok
 
 
-def test_proxy_ack_round_trip() -> None:
-    ack = ProxyAck(stream_id=123, ack_seq_num=456)
-    decoded = ProxyAck.decode(ack.encode())
-    assert decoded == ack
+def test_open_err_round_trip() -> None:
+    open_err = OpenErr(error_code=503, reason="upstream connect failed")
+    assert OpenErr.decode(open_err.encode()) == open_err
 
 
-def test_proxy_ack_decode_rejects_short_payload() -> None:
-    with pytest.raises(ValueError, match="ack frame too short"):
-        ProxyAck.decode(b"\x00" * 7)
+def test_data_round_trip() -> None:
+    payload = Data(payload=b"chunk")
+    assert Data.decode(payload.encode()) == payload
+
+
+def test_close_decode_rejects_payload() -> None:
+    with pytest.raises(ValueError, match="must be empty"):
+        Close.decode(b"x")
+
+
+def test_close_ack_decode_rejects_payload() -> None:
+    with pytest.raises(ValueError, match="must be empty"):
+        CloseAck.decode(b"x")

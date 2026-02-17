@@ -3,9 +3,9 @@ import socket
 import threading
 import time
 
-from icmp import ICMPPacket
-from proxy import Frame, FrameType, ProxyAck, ProxyClose, ProxyData
-from reliable import ReliableICMPSession
+from icmp_proxy.icmp import ICMPPacket
+from icmp_proxy.protocol import FLAG_RELIABLE, Frame, MessageType
+from icmp_proxy.transport import ReliableICMPSession
 
 
 class FakeRawSocket:
@@ -50,7 +50,6 @@ def _wrap_frame_for_recv(frame: Frame) -> bytes:
 def _decode_sent_frames(fake_socket: FakeRawSocket) -> list[Frame]:
     frames: list[Frame] = []
     for packet in fake_socket.sent_packets:
-        # Outbound packets are ICMP bytes without IPv4 header.
         frames.append(Frame.decode(packet[8:]))
     return frames
 
@@ -64,29 +63,39 @@ def _wait_until(predicate, timeout_s: float = 1.0, interval_s: float = 0.01) -> 
     return False
 
 
-def test_send_reliable_ack_clears_pending() -> None:
-    fake = FakeRawSocket()
-    session = ReliableICMPSession(
+def _new_session(fake: FakeRawSocket, **kwargs) -> ReliableICMPSession:
+    return ReliableICMPSession(
         connection=fake,
-        local_host_id=1,
         remote_host="127.0.0.1",
         outbound_icmp_type=8,
         outbound_icmp_code=0,
+        inbound_icmp_type=0,
+        inbound_icmp_code=0,
+        **kwargs,
     )
+
+
+def test_send_reliable_ack_clears_pending() -> None:
+    fake = FakeRawSocket()
+    session = _new_session(fake)
     session.start()
     try:
-        seq_num = session.send_reliable(FrameType.PROXY_DATA, stream_id=7, payload=b"abc")
+        seq_num = session.send_reliable(
+            msg_type=MessageType.DATA,
+            session_id=1,
+            stream_id=7,
+            payload=b"abc",
+        )
         assert _wait_until(lambda: len(fake.sent_packets) >= 1)
 
-        ack_frame = Frame(
-            from_host=0,
-            frame_type=FrameType.PROXY_ACK,
+        ack_frame = Frame.make(
+            msg_type=MessageType.KEEPALIVE,
+            payload=b"",
+            session_id=1,
             stream_id=7,
-            seq_num=55,
-            payload=ProxyAck(stream_id=7, ack_seq_num=seq_num).encode(),
+            ack_num=seq_num,
         )
         fake.inject_packet(_wrap_frame_for_recv(ack_frame))
-
         assert session.wait_for_ack(stream_id=7, seq_num=seq_num, timeout_s=1.0)
     finally:
         session.stop()
@@ -95,17 +104,13 @@ def test_send_reliable_ack_clears_pending() -> None:
 
 def test_retransmit_and_retry_exhaustion_callback() -> None:
     fake = FakeRawSocket()
-    exhausted: list[tuple[int, FrameType]] = []
+    exhausted: list[tuple[int, MessageType]] = []
 
-    def on_retry_exhausted(stream_id: int, frame_type: FrameType) -> None:
-        exhausted.append((stream_id, frame_type))
+    def on_retry_exhausted(stream_id: int, msg_type: MessageType) -> None:
+        exhausted.append((stream_id, msg_type))
 
-    session = ReliableICMPSession(
-        connection=fake,
-        local_host_id=1,
-        remote_host="127.0.0.1",
-        outbound_icmp_type=8,
-        outbound_icmp_code=0,
+    session = _new_session(
+        fake,
         retx_timeout_ms=30,
         retx_max_retries=1,
         retx_scan_interval_ms=10,
@@ -113,42 +118,40 @@ def test_retransmit_and_retry_exhaustion_callback() -> None:
     )
     session.start()
     try:
-        seq_num = session.send_reliable(FrameType.PROXY_DATA, stream_id=42, payload=b"x")
-
+        seq_num = session.send_reliable(
+            msg_type=MessageType.DATA,
+            session_id=2,
+            stream_id=42,
+            payload=b"x",
+        )
         assert _wait_until(lambda: len(fake.sent_packets) >= 2, timeout_s=1.0)
         assert _wait_until(lambda: exhausted, timeout_s=1.0)
-        assert exhausted == [(42, FrameType.PROXY_DATA)]
+        assert exhausted == [(42, MessageType.DATA)]
         assert (42, seq_num) not in session._pending
     finally:
         session.stop()
         fake.close()
 
 
-def test_duplicate_inbound_frame_is_acked_twice_but_delivered_once() -> None:
+def test_duplicate_inbound_reliable_is_acked_twice_delivered_once() -> None:
     fake = FakeRawSocket()
-    session = ReliableICMPSession(
-        connection=fake,
-        local_host_id=1,
-        remote_host="127.0.0.1",
-        outbound_icmp_type=8,
-        outbound_icmp_code=0,
-        retx_timeout_ms=500,
-    )
+    session = _new_session(fake, retx_timeout_ms=500)
     session.start()
     try:
-        inbound = Frame(
-            from_host=0,
-            frame_type=FrameType.PROXY_DATA,
+        inbound = Frame.make(
+            msg_type=MessageType.DATA,
+            payload=b"ping",
+            session_id=3,
             stream_id=9,
             seq_num=100,
-            payload=ProxyData(size=4, payload=b"ping").encode(),
+            flags=FLAG_RELIABLE,
         )
         wrapped = _wrap_frame_for_recv(inbound)
         fake.inject_packet(wrapped)
         fake.inject_packet(wrapped)
 
         received = session.wait_for_frame(
-            lambda frame: frame.stream_id == 9 and frame.frame_type == FrameType.PROXY_DATA,
+            lambda frame: frame.stream_id == 9 and frame.msg_type == MessageType.DATA,
             timeout_s=1.0,
         )
         assert received is not None
@@ -156,90 +159,38 @@ def test_duplicate_inbound_frame_is_acked_twice_but_delivered_once() -> None:
         assert received.seq_num == 100
 
         duplicate = session.wait_for_frame(
-            lambda frame: frame.stream_id == 9 and frame.frame_type == FrameType.PROXY_DATA,
+            lambda frame: frame.stream_id == 9 and frame.msg_type == MessageType.DATA,
             timeout_s=0.1,
         )
         assert duplicate is None
 
         sent_frames = _decode_sent_frames(fake)
-        ack_frames = [frame for frame in sent_frames if frame.frame_type == FrameType.PROXY_ACK]
+        ack_frames = [frame for frame in sent_frames if frame.msg_type == MessageType.KEEPALIVE]
         assert len(ack_frames) == 2
-        for ack_frame in ack_frames:
-            assert ProxyAck.decode(ack_frame.payload) == ProxyAck(stream_id=9, ack_seq_num=100)
+        assert ack_frames[0].ack_num == 100
+        assert ack_frames[1].ack_num == 100
     finally:
         session.stop()
         fake.close()
 
 
-def test_self_originated_frame_is_ignored() -> None:
+def test_inbound_type_mismatch_is_ignored() -> None:
     fake = FakeRawSocket()
-    session = ReliableICMPSession(
-        connection=fake,
-        local_host_id=1,
-        remote_host="127.0.0.1",
-        outbound_icmp_type=8,
-        outbound_icmp_code=0,
-    )
+    session = _new_session(fake)
     session.start()
     try:
-        self_frame = Frame(
-            from_host=1,
-            frame_type=FrameType.PROXY_DATA,
+        wrong_type_packet = ICMPPacket(icmp_type=8, icmp_code=0, payload=Frame.make(
+            msg_type=MessageType.DATA,
+            payload=b"self",
+            session_id=1,
             stream_id=5,
             seq_num=1,
-            payload=b"self",
-        )
-        fake.inject_packet(_wrap_frame_for_recv(self_frame))
+            flags=FLAG_RELIABLE,
+        ).encode())
+        fake.inject_packet((b"\x00" * 20) + wrong_type_packet.to_bytes())
 
         assert session.wait_for_frame(lambda _frame: True, timeout_s=0.2) is None
         assert fake.sent_packets == []
-    finally:
-        session.stop()
-        fake.close()
-
-
-def test_proxy_close_ack_clears_seen_stream_state() -> None:
-    fake = FakeRawSocket()
-    session = ReliableICMPSession(
-        connection=fake,
-        local_host_id=1,
-        remote_host="127.0.0.1",
-        outbound_icmp_type=8,
-        outbound_icmp_code=0,
-    )
-    session.start()
-    try:
-        data_frame = Frame(
-            from_host=0,
-            frame_type=FrameType.PROXY_DATA,
-            stream_id=11,
-            seq_num=3,
-            payload=ProxyData(size=1, payload=b"x").encode(),
-        )
-        fake.inject_packet(_wrap_frame_for_recv(data_frame))
-        delivered = session.wait_for_frame(
-            lambda frame: frame.stream_id == 11 and frame.seq_num == 3,
-            timeout_s=1.0,
-        )
-        assert delivered is not None
-        assert 11 in session._seen
-
-        close_seq = session.send_reliable(
-            frame_type=FrameType.PROXY_CLOSE,
-            stream_id=11,
-            payload=ProxyClose().encode(),
-        )
-        close_ack = Frame(
-            from_host=0,
-            frame_type=FrameType.PROXY_ACK,
-            stream_id=11,
-            seq_num=8,
-            payload=ProxyAck(stream_id=11, ack_seq_num=close_seq).encode(),
-        )
-        fake.inject_packet(_wrap_frame_for_recv(close_ack))
-
-        assert _wait_until(lambda: (11, close_seq) not in session._pending, timeout_s=1.0)
-        assert 11 not in session._seen
     finally:
         session.stop()
         fake.close()

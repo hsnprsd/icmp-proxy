@@ -1,0 +1,24 @@
+[Unit]
+Description=ICMP Proxy Client
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+Group=root
+EnvironmentFile=/etc/icmp-proxy/client.env
+WorkingDirectory=/opt/icmp-proxy
+ExecStart=/usr/bin/python3 -m icmp_proxy.client
+Restart=always
+RestartSec=1s
+AmbientCapabilities=CAP_NET_RAW
+CapabilityBoundingSet=CAP_NET_RAW
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+ReadWritePaths=/var/log /run
+
+[Install]
+WantedBy=multi-user.target
