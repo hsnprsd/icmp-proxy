@@ -9,7 +9,7 @@ _BASE_ENV_VARS = [
 
 _COMMON_ENV_VARS = [
     "ICMP_PROXY_LOG_LEVEL",
-    "ICMP_PROXY_PSK_FILE",
+    "ICMP_PROXY_PSK",
     "ICMP_PROXY_CLIENT_ID",
     "ICMP_PROXY_AUTH_SKEW_MS",
     "ICMP_PROXY_AUTH_REPLAY_TTL_MS",
@@ -139,6 +139,7 @@ def test_load_client_config_socks_defaults(monkeypatch) -> None:
 
     config = load_client_config()
 
+    assert config.common.psk == "change-me"
     assert config.socks_proxy_enable is True
     assert config.socks_proxy_bind_host == "127.0.0.1"
     assert config.socks_proxy_bind_port == 1080
@@ -164,7 +165,7 @@ def test_load_client_config_from_ini(monkeypatch, tmp_path) -> None:
         """
 [common]
 log_level = debug
-psk_file = /tmp/from-ini.psk
+psk = from-ini-secret
 client_id = ini-client
 
 [session]
@@ -186,7 +187,7 @@ socks_proxy_bind_port = 11080
     config = load_client_config()
 
     assert config.common.log_level == "DEBUG"
-    assert config.common.psk_file == "/tmp/from-ini.psk"
+    assert config.common.psk == "from-ini-secret"
     assert config.common.client_id == "ini-client"
     assert config.session.max_inflight_per_stream == 64
     assert config.session.min_inflight_per_stream == 16
@@ -208,15 +209,20 @@ def test_env_overrides_ini(monkeypatch, tmp_path) -> None:
 [client]
 server_host = 10.1.2.3
 socks_proxy_enable = 0
+
+[common]
+psk = from-ini-secret
 """,
     )
     monkeypatch.setenv("ICMP_PROXY_REMOTE_HOST", "127.0.0.55")
     monkeypatch.setenv("ICMP_PROXY_SOCKS_PROXY_ENABLE", "1")
+    monkeypatch.setenv("ICMP_PROXY_PSK", "from-env-secret")
 
     config = load_client_config()
 
     assert config.server_host == "127.0.0.55"
     assert config.socks_proxy_enable is True
+    assert config.common.psk == "from-env-secret"
 
 
 def test_config_file_env_path_override(monkeypatch, tmp_path) -> None:

@@ -27,7 +27,7 @@ Example `config.ini`:
 ```ini
 [common]
 log_level = info
-psk_file = ./psk.txt
+psk = change-me
 client_id = default-client
 
 [session]
@@ -53,7 +53,7 @@ socks_proxy_bind_port = 1080
 Supported environment variables:
 
 - `ICMP_PROXY_CONFIG_FILE` (optional INI path override)
-- `ICMP_PROXY_PSK_FILE` (default: `./psk.txt`)
+- `ICMP_PROXY_PSK` (default: `change-me`; change this before production use)
 - `ICMP_PROXY_CLIENT_ID` (default: `default-client`)
 - `ICMP_PROXY_REMOTE_HOST` (client-side, default: `127.0.0.1`)
 - `ICMP_PROXY_HTTP_PROXY_BIND_HOST` (client-side HTTP proxy listen host, default: `127.0.0.1`)
@@ -83,11 +83,13 @@ Supported environment variables:
 
 ## Local Development
 
-Create a PSK file:
+Set your PSK in `config.ini` or via environment variable:
 
 ```bash
-printf "dev-secret\n" > psk.txt
+export ICMP_PROXY_PSK=dev-secret
 ```
+
+Warning: the built-in default PSK is `change-me`. Change it before exposing either side to untrusted networks.
 
 Run syntax checks:
 
@@ -119,13 +121,13 @@ sudo sysctl -w net.ipv4.icmp_echo_ignore_all=1
 Start server:
 
 ```bash
-sudo -E ICMP_PROXY_PSK_FILE=./psk.txt ICMP_PROXY_CLIENT_ID=default-client python3 -m icmp_proxy.server
+sudo -E ICMP_PROXY_PSK=dev-secret ICMP_PROXY_CLIENT_ID=default-client python3 -m icmp_proxy.server
 ```
 
 Start client:
 
 ```bash
-sudo -E ICMP_PROXY_PSK_FILE=./psk.txt ICMP_PROXY_CLIENT_ID=default-client ICMP_PROXY_REMOTE_HOST=127.0.0.1 python3 -m icmp_proxy.client
+sudo -E ICMP_PROXY_PSK=dev-secret ICMP_PROXY_CLIENT_ID=default-client ICMP_PROXY_REMOTE_HOST=127.0.0.1 python3 -m icmp_proxy.client
 ```
 
 The client process starts both local proxy listeners by default:

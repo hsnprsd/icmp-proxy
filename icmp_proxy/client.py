@@ -15,7 +15,7 @@ from .auth import (
     timestamp_within_window,
     verify_signature,
 )
-from .config import ClientConfig, load_client_config
+from .config import DEFAULT_PSK, ClientConfig, load_client_config
 from .icmp import ICMP_ECHO_REPLY, ICMP_ECHO_REPLY_CODE, ICMP_ECHO_REQUEST, ICMP_ECHO_REQUEST_CODE
 from .protocol import (
     Close,
@@ -404,7 +404,11 @@ def _relay_stream(client: Client, connection: socket.socket, stream_id: int, ini
 class Client:
     def __init__(self, config: ClientConfig) -> None:
         self.config = config
-        self.psk = load_psk(config.common.psk_file)
+        self.psk = load_psk(config.common.psk)
+        if config.common.psk.strip() == DEFAULT_PSK:
+            LOGGER.warning(
+                "using default PSK; set [common].psk in config.ini or ICMP_PROXY_PSK in the environment"
+            )
         self.session_id = 0
         self.client_nonce = b""
         self._open_lock = Lock()

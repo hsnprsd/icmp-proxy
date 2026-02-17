@@ -8,11 +8,10 @@ from dataclasses import dataclass
 from hashlib import sha256
 
 
-def load_psk(psk_file: str) -> bytes:
-    with open(psk_file, "rb") as f:
-        psk = f.read().strip()
+def load_psk(psk_value: str) -> bytes:
+    psk = psk_value.encode("utf-8").strip()
     if not psk:
-        raise ValueError("PSK file is empty")
+        raise ValueError("PSK is empty")
     return psk
 
 

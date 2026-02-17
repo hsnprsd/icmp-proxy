@@ -8,10 +8,11 @@ from pathlib import Path
 
 CONFIG_FILE_ENV = "ICMP_PROXY_CONFIG_FILE"
 DEFAULT_CONFIG_FILE = "config.ini"
+DEFAULT_PSK = "change-me"
 
 _ENV_TO_INI_KEY: dict[str, tuple[str, str]] = {
     "ICMP_PROXY_LOG_LEVEL": ("common", "log_level"),
-    "ICMP_PROXY_PSK_FILE": ("common", "psk_file"),
+    "ICMP_PROXY_PSK": ("common", "psk"),
     "ICMP_PROXY_CLIENT_ID": ("common", "client_id"),
     "ICMP_PROXY_AUTH_SKEW_MS": ("common", "auth_skew_ms"),
     "ICMP_PROXY_AUTH_REPLAY_TTL_MS": ("common", "auth_replay_ttl_ms"),
@@ -168,7 +169,7 @@ class SessionConfig:
 @dataclass(frozen=True)
 class CommonConfig:
     log_level: str
-    psk_file: str
+    psk: str
     client_id: str
     auth_skew_ms: int
     auth_replay_ttl_ms: int
@@ -201,7 +202,7 @@ class ClientConfig:
 def _load_common_config(resolver: _ConfigResolver) -> CommonConfig:
     return CommonConfig(
         log_level=resolver.env_str("ICMP_PROXY_LOG_LEVEL", "INFO").upper(),
-        psk_file=resolver.env_str("ICMP_PROXY_PSK_FILE", "./psk.txt"),
+        psk=resolver.env_str("ICMP_PROXY_PSK", DEFAULT_PSK),
         client_id=resolver.env_str("ICMP_PROXY_CLIENT_ID", "default-client"),
         auth_skew_ms=resolver.env_int("ICMP_PROXY_AUTH_SKEW_MS", 30_000),
         auth_replay_ttl_ms=resolver.env_int("ICMP_PROXY_AUTH_REPLAY_TTL_MS", 30_000),

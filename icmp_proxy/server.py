@@ -15,7 +15,7 @@ from .auth import (
     timestamp_within_window,
     verify_signature,
 )
-from .config import ServerConfig, load_server_config
+from .config import DEFAULT_PSK, ServerConfig, load_server_config
 from .icmp import ICMP_ECHO_REPLY, ICMP_ECHO_REPLY_CODE, ICMP_ECHO_REQUEST, ICMP_ECHO_REQUEST_CODE
 from .protocol import (
     Close,
@@ -47,7 +47,11 @@ class Server:
         self.config = config
         self.outbound_connections: dict[int, socket.socket] = {}
         self.connection_lock = Lock()
-        self.psk = load_psk(config.common.psk_file)
+        self.psk = load_psk(config.common.psk)
+        if config.common.psk.strip() == DEFAULT_PSK:
+            LOGGER.warning(
+                "using default PSK; set [common].psk in config.ini or ICMP_PROXY_PSK in the environment"
+            )
         self.replay_cache = ReplayCache(
             ttl_ms=config.common.auth_replay_ttl_ms,
             max_entries=config.common.auth_replay_max_entries,

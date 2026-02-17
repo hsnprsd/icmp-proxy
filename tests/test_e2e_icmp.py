@@ -7,7 +7,7 @@ from icmp_proxy.config import ClientConfig, CommonConfig, SessionConfig
 def _test_client_config() -> ClientConfig:
     common = CommonConfig(
         log_level="WARNING",
-        psk_file=".test-psk",
+        psk="test-secret",
         client_id="test-client",
         auth_skew_ms=30_000,
         auth_replay_ttl_ms=30_000,

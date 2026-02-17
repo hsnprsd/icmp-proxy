@@ -1,5 +1,3 @@
-from pathlib import Path
-
 from icmp_proxy.auth import now_ms, sign_client_hello
 from icmp_proxy.config import CommonConfig, ServerConfig, SessionConfig
 from icmp_proxy.protocol import Frame, Hello, MessageType
@@ -35,7 +33,7 @@ class FakeReliable:
         _ = stream_id
 
 
-def _server_config(psk_file: Path) -> ServerConfig:
+def _server_config() -> ServerConfig:
     return ServerConfig(
         bind_host="0.0.0.0",
         client_host="127.0.0.1",
@@ -44,7 +42,7 @@ def _server_config(psk_file: Path) -> ServerConfig:
         stream_idle_timeout_ms=30_000,
         common=CommonConfig(
             log_level="WARNING",
-            psk_file=str(psk_file),
+            psk="test-secret",
             client_id="test-client",
             auth_skew_ms=30_000,
             auth_replay_ttl_ms=30_000,
@@ -61,10 +59,8 @@ def _server_config(psk_file: Path) -> ServerConfig:
     )
 
 
-def test_process_hello_duplicate_nonce_resends_same_session(tmp_path) -> None:
-    psk_file = tmp_path / "psk.txt"
-    psk_file.write_text("test-secret\n", encoding="utf-8")
-    server = Server(_server_config(psk_file))
+def test_process_hello_duplicate_nonce_resends_same_session() -> None:
+    server = Server(_server_config())
     server.reliable = FakeReliable()  # type: ignore[assignment]
 
     nonce = b"x" * 16

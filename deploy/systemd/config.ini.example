@@ -1,6 +1,6 @@
 [common]
 log_level = info
-psk_file = /etc/icmp-proxy/psk.txt
+psk = change-me
 client_id = default-client
 auth_skew_ms = 30000
 auth_replay_ttl_ms = 30000
