@@ -20,6 +20,7 @@ from .auth import (
 )
 from .config import DEFAULT_PSK, ServerConfig, load_server_config
 from .icmp import ICMP_ECHO_REPLY, ICMP_ECHO_REPLY_CODE, ICMP_ECHO_REQUEST, ICMP_ECHO_REQUEST_CODE
+from .metrics import MetricsHTTPServer, ServerPrometheusMetrics, start_prometheus_http_server
 from .protocol import (
     Close,
     CloseAck,
@@ -84,9 +85,30 @@ class Server:
         self.hello_cache: dict[bytes, tuple[int, HelloAck, int, str]] = {}
         self._reaper_stop_event = Event()
         self._reaper_thread: Thread | None = None
+        self._metrics_http_server: MetricsHTTPServer | None = None
+        self._metrics = ServerPrometheusMetrics()
+        self._sync_metrics_gauges()
+
+    def _sync_metrics_gauges(self) -> None:
+        with self.connection_lock:
+            self._metrics.set_gauge("icmp_proxy_server_sessions_active", len(self.sessions))
+            self._metrics.set_gauge("icmp_proxy_server_streams_active", len(self.outbound_streams))
 
     def __enter__(self) -> "Server":
         LOGGER.info("starting server")
+        if self.config.prometheus_enable:
+            self._metrics_http_server = start_prometheus_http_server(
+                host=self.config.prometheus_bind_host,
+                port=self.config.prometheus_port,
+                metrics=self._metrics,
+            )
+            LOGGER.info(
+                "prometheus metrics endpoint listening on %s:%d/metrics",
+                self.config.prometheus_bind_host,
+                self.config.prometheus_port,
+            )
+        else:
+            LOGGER.info("prometheus metrics endpoint disabled")
         self.socket = socket.socket(socket.AF_INET, socket.SOCK_RAW, socket.IPPROTO_ICMP)
         self.socket.bind((self.config.bind_host, 0))
         session = self.config.session
@@ -135,6 +157,10 @@ class Server:
             self._close_stream_state(stream)
             self.reliable.clear_stream_state(stream_key[0], stream_key[1])
         self.socket.close()
+        if self._metrics_http_server is not None:
+            self._metrics_http_server.stop()
+            self._metrics_http_server = None
+        self._sync_metrics_gauges()
         LOGGER.info("server stopped")
 
     def __call__(self) -> None:
@@ -195,6 +221,7 @@ class Server:
             self._close_stream_state(stream)
         if clear_transport:
             self.reliable.clear_stream_state(session_id, stream_id)
+        self._sync_metrics_gauges()
 
     def _close_session(self, session_id: int) -> None:
         with self.connection_lock:
@@ -210,6 +237,7 @@ class Server:
         for stream_id, stream in streams:
             self._close_stream_state(stream)
             self.reliable.clear_stream_state(session_id, stream_id)
+        self._sync_metrics_gauges()
 
     def _session_reaper_loop(self) -> None:
         poll_interval_s = min(1.0, max(0.1, self.config.session_idle_timeout_ms / 2000.0))
@@ -222,6 +250,7 @@ class Server:
                         expired_session_ids.append(session_id)
             for session_id in expired_session_ids:
                 LOGGER.info("evicting idle session session_id=%d", session_id)
+                self._metrics.inc("icmp_proxy_server_sessions_evicted_idle_total")
                 self._close_session(session_id)
 
     def _send_open_err(self, *, session_id: int, error_code: int, reason: str) -> None:
@@ -360,9 +389,11 @@ class Server:
             self._close_stream(session_id, stream_id)
 
     def process_hello(self, frame: Frame, source_host: str) -> None:
+        self._metrics.inc("icmp_proxy_server_hello_total")
         try:
             hello = Hello.decode(frame.payload)
         except ValueError:
+            self._metrics.inc_labeled("icmp_proxy_server_hello_rejected_total", "reason", "decode")
             return
 
         cache_entry = self.hello_cache.get(hello.nonce)
@@ -383,6 +414,7 @@ class Server:
 
         if hello.client_id != self.config.common.client_id:
             LOGGER.warning("rejecting unknown client id=%s", hello.client_id)
+            self._metrics.inc_labeled("icmp_proxy_server_hello_rejected_total", "reason", "client_id")
             return
 
         if not timestamp_within_window(
@@ -391,10 +423,12 @@ class Server:
             allowed_skew_ms=self.config.common.auth_skew_ms,
         ):
             LOGGER.warning("rejecting stale hello timestamp")
+            self._metrics.inc_labeled("icmp_proxy_server_hello_rejected_total", "reason", "timestamp")
             return
 
         if not self.replay_cache.add_if_new(hello.nonce, now_timestamp_ms):
             LOGGER.warning("rejecting replayed hello nonce")
+            self._metrics.inc_labeled("icmp_proxy_server_hello_rejected_total", "reason", "replay")
             return
 
         expected_sig = sign_client_hello(
@@ -405,6 +439,7 @@ class Server:
         )
         if not verify_signature(expected_sig, hello.hmac_sha256):
             LOGGER.warning("rejecting hello with invalid signature")
+            self._metrics.inc_labeled("icmp_proxy_server_hello_rejected_total", "reason", "signature")
             return
 
         session_id = self._allocate_session_id()
@@ -429,6 +464,8 @@ class Server:
                 client_nonce=hello.nonce,
                 last_activity_ms=now_timestamp_ms,
             )
+        self._metrics.inc("icmp_proxy_server_sessions_created_total")
+        self._sync_metrics_gauges()
 
         self.hello_cache[hello.nonce] = (session_id, hello_ack, now_timestamp_ms, source_host)
         if len(self.hello_cache) > self.config.common.auth_replay_max_entries:
@@ -445,9 +482,11 @@ class Server:
         )
 
     def process_open_stream(self, frame: Frame) -> None:
+        self._metrics.inc("icmp_proxy_server_open_stream_total")
         try:
             open_stream = OpenStream.decode(frame.payload)
         except ValueError:
+            self._metrics.inc_labeled("icmp_proxy_server_open_stream_error_total", "reason", "decode")
             self._send_open_err(
                 session_id=frame.session_id,
                 error_code=400,
@@ -461,6 +500,7 @@ class Server:
             outbound_connection.connect((open_stream.remote_host, open_stream.remote_port))
         except OSError:
             outbound_connection.close()
+            self._metrics.inc_labeled("icmp_proxy_server_open_stream_error_total", "reason", "connect_failed")
             self._send_open_err(
                 session_id=frame.session_id,
                 error_code=503,
@@ -475,10 +515,12 @@ class Server:
             session = self.sessions.get(frame.session_id)
             if session is None:
                 outbound_connection.close()
+                self._metrics.inc_labeled("icmp_proxy_server_open_stream_error_total", "reason", "session_missing")
                 return
             session.stream_ids.add(stream_id)
             self.outbound_streams[(frame.session_id, stream_id)] = TCPStreamState(socket=outbound_connection)
             remote_host = session.remote_host
+        self._sync_metrics_gauges()
 
         relay_thread = Thread(
             target=self.relay_tcp,
@@ -506,6 +548,7 @@ class Server:
             )
             return
 
+        self._metrics.inc("icmp_proxy_server_open_datagram_total")
         stream_id = self._allocate_stream_id(frame.session_id)
         datagram_stream = DatagramStreamState()
         with self.connection_lock:
@@ -515,6 +558,7 @@ class Server:
             session.stream_ids.add(stream_id)
             self.outbound_streams[(frame.session_id, stream_id)] = datagram_stream
             remote_host = session.remote_host
+        self._sync_metrics_gauges()
 
         relay_thread = Thread(
             target=self.relay_datagram,
@@ -532,6 +576,7 @@ class Server:
         )
 
     def process_data(self, frame: Frame) -> None:
+        self._metrics.inc("icmp_proxy_server_data_frames_total")
         payload = Data.decode(frame.payload).payload
         with self.connection_lock:
             stream = self.outbound_streams.get((frame.session_id, frame.stream_id))
@@ -550,6 +595,7 @@ class Server:
         self._send_udp_datagram(stream, packet)
 
     def process_close(self, frame: Frame) -> None:
+        self._metrics.inc("icmp_proxy_server_close_frames_total")
         try:
             Close.decode(frame.payload)
         except ValueError:

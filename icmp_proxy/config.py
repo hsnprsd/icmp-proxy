@@ -37,6 +37,9 @@ _ENV_TO_INI_KEY: dict[str, tuple[str, str]] = {
     "ICMP_PROXY_CLIENT_HOST": ("server", "client_host"),
     "ICMP_PROXY_TARGET_CONNECT_TIMEOUT_MS": ("server", "target_connect_timeout_ms"),
     "ICMP_PROXY_SESSION_IDLE_TIMEOUT_MS": ("server", "session_idle_timeout_ms"),
+    "ICMP_PROXY_PROMETHEUS_ENABLE": ("server", "prometheus_enable"),
+    "ICMP_PROXY_PROMETHEUS_BIND_HOST": ("server", "prometheus_bind_host"),
+    "ICMP_PROXY_PROMETHEUS_PORT": ("server", "prometheus_port"),
     # Client uses ICMP_PROXY_REMOTE_HOST in env but server_host in INI.
     "ICMP_PROXY_REMOTE_HOST": ("client", "server_host"),
     "ICMP_PROXY_HTTP_PROXY_BIND_HOST": ("client", "http_proxy_bind_host"),
@@ -181,6 +184,9 @@ class ServerConfig:
     client_host: str
     target_connect_timeout_ms: int
     session_idle_timeout_ms: int
+    prometheus_enable: bool
+    prometheus_bind_host: str
+    prometheus_port: int
     common: CommonConfig
     session: SessionConfig
 
@@ -266,6 +272,9 @@ def load_server_config() -> ServerConfig:
         client_host=resolver.env_str("ICMP_PROXY_CLIENT_HOST", "127.0.0.1"),
         target_connect_timeout_ms=resolver.env_int("ICMP_PROXY_TARGET_CONNECT_TIMEOUT_MS", 3000),
         session_idle_timeout_ms=resolver.env_int("ICMP_PROXY_SESSION_IDLE_TIMEOUT_MS", 60_000),
+        prometheus_enable=resolver.env_bool("ICMP_PROXY_PROMETHEUS_ENABLE", True),
+        prometheus_bind_host=resolver.env_str("ICMP_PROXY_PROMETHEUS_BIND_HOST", "0.0.0.0"),
+        prometheus_port=resolver.env_int("ICMP_PROXY_PROMETHEUS_PORT", 2112),
         common=_load_common_config(resolver),
         session=_load_session_config(resolver),
     )

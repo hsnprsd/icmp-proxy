@@ -58,12 +58,40 @@ class FakeReliable:
         _ = (session_id, stream_id)
 
 
+class FakeSocket:
+    def bind(self, addr) -> None:  # type: ignore[no-untyped-def]
+        _ = addr
+
+    def close(self) -> None:
+        return
+
+
+class FakeRuntimeReliable:
+    def __init__(self, **kwargs) -> None:  # type: ignore[no-untyped-def]
+        _ = kwargs
+
+    def start(self) -> None:
+        return
+
+    def stop(self) -> None:
+        return
+
+    def wait(self) -> None:
+        return
+
+    def clear_stream_state(self, session_id: int, stream_id: int) -> None:
+        _ = (session_id, stream_id)
+
+
 def _server_config() -> ServerConfig:
     return ServerConfig(
         bind_host="0.0.0.0",
         client_host="127.0.0.1",
         target_connect_timeout_ms=1000,
         session_idle_timeout_ms=30_000,
+        prometheus_enable=True,
+        prometheus_bind_host="0.0.0.0",
+        prometheus_port=2112,
         common=CommonConfig(
             log_level="WARNING",
             psk="test-secret",
@@ -199,3 +227,58 @@ def test_process_frame_rejects_mismatched_source_host() -> None:
     server.process_frame(open_datagram_frame, "10.1.1.2")
 
     assert len(server.reliable.sent) == before  # type: ignore[attr-defined]
+
+
+def test_server_context_starts_prometheus_when_enabled(monkeypatch) -> None:
+    config = _server_config()
+    stop_called = {"value": False}
+    start_called = {"value": False}
+
+    class FakeMetricsServer:
+        def stop(self) -> None:
+            stop_called["value"] = True
+
+    def _fake_start(host: str, port: int, metrics) -> FakeMetricsServer:  # type: ignore[no-untyped-def]
+        _ = metrics
+        start_called["value"] = True
+        assert host == "0.0.0.0"
+        assert port == 2112
+        return FakeMetricsServer()
+
+    monkeypatch.setattr("icmp_proxy.server.start_prometheus_http_server", _fake_start)
+    monkeypatch.setattr("icmp_proxy.server.ReliableICMPSession", FakeRuntimeReliable)
+    monkeypatch.setattr("icmp_proxy.server.socket.socket", lambda *args, **kwargs: FakeSocket())
+
+    with Server(config):
+        assert start_called["value"] is True
+
+    assert stop_called["value"] is True
+
+
+def test_server_context_skips_prometheus_when_disabled(monkeypatch) -> None:
+    config = _server_config()
+    config = ServerConfig(
+        bind_host=config.bind_host,
+        client_host=config.client_host,
+        target_connect_timeout_ms=config.target_connect_timeout_ms,
+        session_idle_timeout_ms=config.session_idle_timeout_ms,
+        prometheus_enable=False,
+        prometheus_bind_host=config.prometheus_bind_host,
+        prometheus_port=config.prometheus_port,
+        common=config.common,
+        session=config.session,
+    )
+    start_called = {"value": False}
+
+    def _fake_start(host: str, port: int, metrics) -> None:  # type: ignore[no-untyped-def]
+        _ = (host, port, metrics)
+        start_called["value"] = True
+
+    monkeypatch.setattr("icmp_proxy.server.start_prometheus_http_server", _fake_start)
+    monkeypatch.setattr("icmp_proxy.server.ReliableICMPSession", FakeRuntimeReliable)
+    monkeypatch.setattr("icmp_proxy.server.socket.socket", lambda *args, **kwargs: FakeSocket())
+
+    with Server(config):
+        pass
+
+    assert start_called["value"] is False

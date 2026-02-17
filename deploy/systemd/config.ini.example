@@ -29,6 +29,9 @@ bind_host = 0.0.0.0
 client_host = 127.0.0.1
 target_connect_timeout_ms = 3000
 session_idle_timeout_ms = 60000
+prometheus_enable = 1
+prometheus_bind_host = 0.0.0.0
+prometheus_port = 2112
 
 [client]
 server_host = 127.0.0.1

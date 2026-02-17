@@ -44,6 +44,9 @@ mtu_payload = 1200
 bind_host = 0.0.0.0
 client_host = 127.0.0.1
 session_idle_timeout_ms = 60000
+prometheus_enable = 1
+prometheus_bind_host = 0.0.0.0
+prometheus_port = 2112
 
 [client]
 server_host = 127.0.0.1
@@ -68,6 +71,9 @@ Supported environment variables:
 - `ICMP_PROXY_BIND_HOST` (server-side, default: `0.0.0.0`)
 - `ICMP_PROXY_CLIENT_HOST` (server-side destination for replies, default: `127.0.0.1`)
 - `ICMP_PROXY_SESSION_IDLE_TIMEOUT_MS` (server-side authenticated session idle timeout, default: `60000`)
+- `ICMP_PROXY_PROMETHEUS_ENABLE` (server-side, default: `1`; enables Prometheus endpoint when true)
+- `ICMP_PROXY_PROMETHEUS_BIND_HOST` (server-side, default: `0.0.0.0`)
+- `ICMP_PROXY_PROMETHEUS_PORT` (server-side, default: `2112`)
 - `ICMP_PROXY_MAX_INFLIGHT_PER_STREAM` (default: `1024`)
 - `ICMP_PROXY_MIN_INFLIGHT_PER_STREAM` (default: `32`)
 - `ICMP_PROXY_MAX_GLOBAL_INFLIGHT` (default: `2048`)
@@ -84,6 +90,12 @@ Supported environment variables:
 - `ICMP_PROXY_STATS_INTERVAL_MS` (default: `1000`)
 - `ICMP_PROXY_PERFORMANCE_METRICS_ENABLE` (default: `0`; when enabled, periodic flow-performance logs are emitted)
 - `ICMP_PROXY_LOG_LEVEL` (default: `INFO`)
+
+Server exports Prometheus metrics at `/metrics` when enabled (default), for example:
+
+```bash
+curl http://127.0.0.1:2112/metrics
+```
 
 ## Local Development
 

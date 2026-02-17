@@ -49,6 +49,9 @@ _SERVER_ENV_VARS = [
     "ICMP_PROXY_CLIENT_HOST",
     "ICMP_PROXY_TARGET_CONNECT_TIMEOUT_MS",
     "ICMP_PROXY_SESSION_IDLE_TIMEOUT_MS",
+    "ICMP_PROXY_PROMETHEUS_ENABLE",
+    "ICMP_PROXY_PROMETHEUS_BIND_HOST",
+    "ICMP_PROXY_PROMETHEUS_PORT",
 ]
 
 
@@ -241,6 +244,57 @@ session_idle_timeout_ms = 900
 
     assert config.bind_host == "127.0.0.1"
     assert config.session_idle_timeout_ms == 900
+
+
+def test_load_server_config_prometheus_defaults(monkeypatch) -> None:
+    _clear_server_env(monkeypatch)
+
+    config = load_server_config()
+
+    assert config.prometheus_enable is True
+    assert config.prometheus_bind_host == "0.0.0.0"
+    assert config.prometheus_port == 2112
+
+
+def test_load_server_config_prometheus_from_ini(monkeypatch, tmp_path) -> None:
+    _clear_server_env(monkeypatch)
+    _write_ini(
+        tmp_path,
+        """
+[server]
+prometheus_enable = 0
+prometheus_bind_host = 127.0.0.1
+prometheus_port = 3212
+""",
+    )
+
+    config = load_server_config()
+
+    assert config.prometheus_enable is False
+    assert config.prometheus_bind_host == "127.0.0.1"
+    assert config.prometheus_port == 3212
+
+
+def test_load_server_config_prometheus_env_overrides_ini(monkeypatch, tmp_path) -> None:
+    _clear_server_env(monkeypatch)
+    _write_ini(
+        tmp_path,
+        """
+[server]
+prometheus_enable = 0
+prometheus_bind_host = 127.0.0.1
+prometheus_port = 3212
+""",
+    )
+    monkeypatch.setenv("ICMP_PROXY_PROMETHEUS_ENABLE", "1")
+    monkeypatch.setenv("ICMP_PROXY_PROMETHEUS_BIND_HOST", "0.0.0.0")
+    monkeypatch.setenv("ICMP_PROXY_PROMETHEUS_PORT", "9110")
+
+    config = load_server_config()
+
+    assert config.prometheus_enable is True
+    assert config.prometheus_bind_host == "0.0.0.0"
+    assert config.prometheus_port == 9110
 
 
 def test_missing_explicit_config_file_raises(monkeypatch, tmp_path) -> None:
