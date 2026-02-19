@@ -1,4 +1,5 @@
 # ICMP Proxy
+[![Tests](https://github.com/hsnprsd/icmp-proxy/actions/workflows/tests.yml/badge.svg?branch=master)](https://github.com/hsnprsd/icmp-proxy/actions/workflows/tests.yml)
 
 Production-oriented ICMP tunnel prototype with:
 - Binary wire protocol
