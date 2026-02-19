@@ -1,0 +1,103 @@
+# Contributing
+
+This repository uses Python 3 and `pytest` for tests.
+
+## Prerequisites
+
+- Linux host with Python 3.
+- Permission to run raw ICMP sockets:
+  - run as `root`, or
+  - run with `CAP_NET_RAW`.
+
+## Setup
+
+Create and activate a virtual environment:
+
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+```
+
+Install dependencies:
+
+```bash
+python3 -m pip install --upgrade pip
+python3 -m pip install -r requirements.txt
+```
+
+## Run Locally
+
+For complete runtime details, see `USAGE.md`.
+
+For single-machine loopback testing, disable kernel ICMP echo replies:
+
+```bash
+sudo sysctl -w net.ipv4.icmp_echo_ignore_all=1
+```
+
+Restore after testing:
+
+```bash
+sudo sysctl -w net.ipv4.icmp_echo_ignore_all=0
+```
+
+Set minimum shared env vars (same values on both client and server):
+
+```bash
+export ICMP_PROXY_PSK='dev-secret'
+export ICMP_PROXY_CLIENT_ID='dev-client'
+```
+
+Run server:
+
+```bash
+sudo -E python3 -m icmp_proxy.server
+```
+
+Run client (separate terminal):
+
+```bash
+export ICMP_PROXY_REMOTE_HOST='127.0.0.1'
+sudo -E python3 -m icmp_proxy.client
+```
+
+Quick checks:
+
+```bash
+curl -v -x http://127.0.0.1:8080 http://example.com/
+curl -v --socks5-hostname 127.0.0.1:1080 http://example.com/
+```
+
+## Tests
+
+Run these before opening a PR.
+
+Syntax check:
+
+```bash
+python3 -m py_compile icmp_proxy/*.py tests/*.py
+```
+
+Unit/integration tests that do not require root:
+
+```bash
+python3 -m pytest -m "not requires_root"
+```
+
+Root-required E2E tests (local path only):
+
+```bash
+./run_e2e_tests.sh local
+```
+
+Root-required E2E tests (external path):
+
+```bash
+./run_e2e_tests.sh external
+```
+
+Run full E2E set:
+
+```bash
+./run_e2e_tests.sh all
+```

@@ -10,6 +10,8 @@ Production-oriented ICMP tunnel prototype with:
 
 - Design document: [`DESIGN.md`](DESIGN.md)
 - Usage guide (server/client runbook): [`USAGE.md`](USAGE.md)
+- Contributing guide (setup, local run, test policy): [`CONTRIBUTING.md`](CONTRIBUTING.md)
+- Agent-facing contribution pointer: [`AGENTS.md`](AGENTS.md)
 
 ## Configuration
 
