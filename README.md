@@ -11,11 +11,6 @@ Production-oriented ICMP tunnel prototype with:
 - Design document: [`DESIGN.md`](DESIGN.md)
 - Usage guide (server/client runbook): [`USAGE.md`](USAGE.md)
 
-## Compatibility Policy
-
-During active development, backward compatibility is intentionally not preserved.
-Wire protocol, message formats, and module/CLI interfaces may break between commits.
-
 ## Configuration
 
 Configuration is loaded with this precedence (lowest to highest):
