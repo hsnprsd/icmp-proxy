@@ -11,6 +11,40 @@ Runtime support:
 - Linux and macOS are supported for manual server/client execution.
 - Raw ICMP sockets require elevated privileges (`root`/`sudo` on macOS, or `root`/`CAP_NET_RAW` on Linux).
 
+## Debian Packages
+
+Installable Debian packages are published on GitHub Releases for:
+
+- Debian 12 (`amd64`)
+- Ubuntu 24.04 (`amd64`)
+
+Package matrix:
+
+- `icmp-proxy-common_<version>_all.deb`: shared Python runtime and both CLI entry points
+- `icmp-proxy-server_<version>_amd64.deb`: server systemd unit + `/etc/icmp-proxy/server.env`
+- `icmp-proxy-client_<version>_amd64.deb`: client systemd unit + `/etc/icmp-proxy/client.env`
+
+Quick install examples:
+
+```bash
+# Server host
+sudo apt install ./icmp-proxy-common_<version>_all.deb ./icmp-proxy-server_<version>_amd64.deb
+
+# Client host
+sudo apt install ./icmp-proxy-common_<version>_all.deb ./icmp-proxy-client_<version>_amd64.deb
+```
+
+Post-install:
+
+- Edit `/etc/icmp-proxy/server.env` and/or `/etc/icmp-proxy/client.env`
+- Services are installed but not auto-enabled and not auto-started
+- Start explicitly when config is ready:
+
+```bash
+sudo systemctl enable --now icmp-proxy-server
+sudo systemctl enable --now icmp-proxy-client
+```
+
 ## Documentation
 
 - Design document: [`DESIGN.md`](DESIGN.md)

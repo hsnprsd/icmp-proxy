@@ -1,0 +1,9 @@
+Format: https://www.debian.org/doc/packaging-manuals/copyright-format/1.0/
+Upstream-Name: icmp-proxy
+Source: https://github.com/hsnprsd/icmp-proxy
+
+Files: *
+Copyright: 2026 ICMP Proxy contributors
+License: proprietary
+ Permission to redistribute and modify is governed by the upstream repository
+ terms.

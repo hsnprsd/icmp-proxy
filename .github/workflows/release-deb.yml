@@ -1,0 +1,50 @@
+name: Release Debian Packages
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  build-deb:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install packaging dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            debhelper \
+            devscripts \
+            dh-python \
+            lintian \
+            pybuild-plugin-pyproject \
+            python3-all \
+            python3-setuptools \
+            python3-wheel
+
+      - name: Build Debian packages
+        run: dpkg-buildpackage -us -uc -b
+
+      - name: Generate SHA256 checksums
+        run: |
+          cd ..
+          sha256sum \
+            icmp-proxy-common_*_all.deb \
+            icmp-proxy-server_*_amd64.deb \
+            icmp-proxy-client_*_amd64.deb > SHA256SUMS
+
+      - name: Upload release artifacts
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            ../icmp-proxy-common_*_all.deb
+            ../icmp-proxy-server_*_amd64.deb
+            ../icmp-proxy-client_*_amd64.deb
+            ../SHA256SUMS

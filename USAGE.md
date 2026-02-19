@@ -71,7 +71,7 @@ export ICMP_PROXY_SOCKS_PROXY_BIND_PORT='1080'
 ### Run Server
 
 ```bash
-sudo -E python3 -m icmp_proxy.server
+sudo -E icmp-proxy-server
 ```
 
 Expected behavior:
@@ -88,7 +88,7 @@ curl http://127.0.0.1:2112/metrics
 ### Run Client
 
 ```bash
-sudo -E python3 -m icmp_proxy.client
+sudo -E icmp-proxy-client
 ```
 
 Expected behavior:
@@ -97,6 +97,11 @@ Expected behavior:
 - Starts local listeners:
   - HTTP proxy on `127.0.0.1:8080` (default)
   - SOCKS5 proxy on `127.0.0.1:1080` (default, no auth)
+
+Source checkout fallback:
+
+- `sudo -E python3 -m icmp_proxy.server`
+- `sudo -E python3 -m icmp_proxy.client`
 
 ## End-to-End Verification
 
@@ -141,43 +146,48 @@ Prometheus unavailable:
 
 ## Systemd Deployment (Production)
 
-This repository ships example files in:
+Install role-specific `.deb` artifacts from GitHub Releases:
 
-- `deploy/systemd/config.ini.example`
-- `deploy/systemd/server.env.example`
-- `deploy/systemd/client.env.example`
-- `deploy/systemd/icmp-proxy-server.service`
-- `deploy/systemd/icmp-proxy-client.service`
+- `icmp-proxy-common_<version>_all.deb`
+- `icmp-proxy-server_<version>_amd64.deb`
+- `icmp-proxy-client_<version>_amd64.deb`
 
-### 1. Install Files
-
-On each host (server/client), place the application at `/opt/icmp-proxy` and copy templates:
+Server host install:
 
 ```bash
-sudo mkdir -p /etc/icmp-proxy
-sudo cp /opt/icmp-proxy/deploy/systemd/server.env.example /etc/icmp-proxy/server.env
-sudo cp /opt/icmp-proxy/deploy/systemd/client.env.example /etc/icmp-proxy/client.env
-sudo cp /opt/icmp-proxy/deploy/systemd/icmp-proxy-server.service /etc/systemd/system/
-sudo cp /opt/icmp-proxy/deploy/systemd/icmp-proxy-client.service /etc/systemd/system/
+sudo apt install ./icmp-proxy-common_<version>_all.deb ./icmp-proxy-server_<version>_amd64.deb
 ```
 
-Edit environment files for your deployment:
+Client host install:
 
-- `/etc/icmp-proxy/server.env` on server host
-- `/etc/icmp-proxy/client.env` on client host
+```bash
+sudo apt install ./icmp-proxy-common_<version>_all.deb ./icmp-proxy-client_<version>_amd64.deb
+```
+
+Services are installed to `/lib/systemd/system`, but package install does not enable or start them.
+
+### 1. Configure Environment Files
+
+Edit the package-installed role file(s):
+
+- `/etc/icmp-proxy/server.env` on the server host
+- `/etc/icmp-proxy/client.env` on the client host
 
 At minimum set:
 
 - `ICMP_PROXY_PSK` to a strong shared secret (both sides)
 - `ICMP_PROXY_CLIENT_ID` consistently
-- `ICMP_PROXY_REMOTE_HOST` on client to the server address
+- `ICMP_PROXY_REMOTE_HOST` on the client to the server address
+
+Optional:
+
+- Set `ICMP_PROXY_CONFIG_FILE=/etc/icmp-proxy/config.ini` if you manage an INI file centrally.
 
 ### 2. Enable and Start Services
 
 Server host:
 
 ```bash
-sudo systemctl daemon-reload
 sudo systemctl enable --now icmp-proxy-server
 sudo systemctl status icmp-proxy-server --no-pager
 ```
@@ -185,7 +195,6 @@ sudo systemctl status icmp-proxy-server --no-pager
 Client host:
 
 ```bash
-sudo systemctl daemon-reload
 sudo systemctl enable --now icmp-proxy-client
 sudo systemctl status icmp-proxy-client --no-pager
 ```

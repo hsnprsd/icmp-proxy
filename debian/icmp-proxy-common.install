@@ -1,0 +1,5 @@
+usr/bin/icmp-proxy-server
+usr/bin/icmp-proxy-client
+usr/lib/python3*/dist-packages/icmp_proxy
+usr/lib/python3*/dist-packages/icmp_proxy-*.dist-info
+deploy/systemd/config.ini.example usr/share/icmp-proxy/

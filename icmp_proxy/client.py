@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import argparse
 from dataclasses import dataclass
 import ipaddress
 import logging
@@ -7,6 +8,7 @@ import socket
 from threading import Event, Lock, Thread
 from urllib.parse import urlsplit
 
+from ._version import __version__
 from .auth import (
     generate_nonce,
     load_psk,
@@ -1107,7 +1109,18 @@ def _run_proxy_servers(client: Client, config: ClientConfig) -> None:
                 raise RuntimeError(f"{thread.name} stopped unexpectedly")
 
 
-def main() -> None:
+def _build_arg_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(description="Run the ICMP Proxy client.")
+    parser.add_argument(
+        "--version",
+        action="version",
+        version=f"%(prog)s {__version__}",
+    )
+    return parser
+
+
+def main(argv: list[str] | None = None) -> None:
+    _build_arg_parser().parse_args(argv)
     config = load_client_config()
     configure_logging(config.common.log_level)
     with Client(config) as client:

@@ -1,3 +1,32 @@
+[build-system]
+requires = ["setuptools>=69", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "icmp-proxy"
+dynamic = ["version"]
+description = "Production-oriented ICMP tunnel proxy with client/server components."
+readme = "README.md"
+requires-python = ">=3.11"
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "License :: Other/Proprietary License",
+    "Operating System :: POSIX :: Linux",
+]
+dependencies = []
+
+[project.scripts]
+icmp-proxy-server = "icmp_proxy.server:main"
+icmp-proxy-client = "icmp_proxy.client:main"
+
+[tool.setuptools.dynamic]
+version = { attr = "icmp_proxy._version.__version__" }
+
+[tool.setuptools.packages.find]
+include = ["icmp_proxy*"]
+
 [tool.black]
 line-length = 100
 target-version = ["py311"]

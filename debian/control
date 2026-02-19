@@ -1,0 +1,30 @@
+Source: icmp-proxy
+Section: net
+Priority: optional
+Maintainer: ICMP Proxy Maintainers <maintainers@icmp-proxy.local>
+Build-Depends: debhelper-compat (= 13), dh-python, pybuild-plugin-pyproject, python3-all, python3-setuptools, python3-wheel
+Standards-Version: 4.7.0
+Rules-Requires-Root: no
+Homepage: https://github.com/hsnprsd/icmp-proxy
+
+Package: icmp-proxy-common
+Architecture: all
+Depends: ${misc:Depends}, ${python3:Depends}
+Description: ICMP Proxy shared Python runtime and CLI entry points
+ Production-oriented ICMP tunnel proxy runtime shared by client and server
+ packages. This package contains the Python modules and command-line entry
+ points used by both roles.
+
+Package: icmp-proxy-server
+Architecture: amd64
+Depends: ${misc:Depends}, icmp-proxy-common (= ${binary:Version}), systemd
+Description: ICMP Proxy server systemd service and configuration
+ Installs the ICMP Proxy server systemd unit and server environment
+ configuration file template under /etc/icmp-proxy.
+
+Package: icmp-proxy-client
+Architecture: amd64
+Depends: ${misc:Depends}, icmp-proxy-common (= ${binary:Version}), systemd
+Description: ICMP Proxy client systemd service and configuration
+ Installs the ICMP Proxy client systemd unit and client environment
+ configuration file template under /etc/icmp-proxy.

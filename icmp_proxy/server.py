@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import argparse
 from dataclasses import dataclass, field
 import logging
 import os
@@ -8,6 +9,7 @@ import socket
 import time
 from threading import Event, Lock, Thread
 
+from ._version import __version__
 from .auth import (
     ReplayCache,
     generate_nonce,
@@ -666,7 +668,18 @@ class Server:
             self.process_heartbeat(frame)
 
 
-def main() -> None:
+def _build_arg_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(description="Run the ICMP Proxy server.")
+    parser.add_argument(
+        "--version",
+        action="version",
+        version=f"%(prog)s {__version__}",
+    )
+    return parser
+
+
+def main(argv: list[str] | None = None) -> None:
+    _build_arg_parser().parse_args(argv)
     config = load_server_config()
     configure_logging(config.common.log_level)
     with Server(config) as server:

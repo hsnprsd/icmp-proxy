@@ -23,6 +23,14 @@ Install dependencies:
 ```bash
 python3 -m pip install --upgrade pip
 python3 -m pip install -r requirements.txt
+python3 -m pip install -e .
+```
+
+For Debian package builds (Debian 12 / Ubuntu 24.04):
+
+```bash
+sudo apt-get update
+sudo apt-get install -y debhelper dh-python devscripts lintian pybuild-plugin-pyproject python3-all python3-setuptools python3-wheel
 ```
 
 ## Coding Style
@@ -118,4 +126,18 @@ Run full E2E set:
 
 ```bash
 ./run_e2e_tests.sh all
+```
+
+## Debian Package Validation
+
+Build `.deb` artifacts:
+
+```bash
+dpkg-buildpackage -us -uc -b
+```
+
+Run lintian on generated packages:
+
+```bash
+lintian ../icmp-proxy-common_*_all.deb ../icmp-proxy-server_*_amd64.deb ../icmp-proxy-client_*_amd64.deb
 ```
