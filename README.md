@@ -104,41 +104,9 @@ Server exports Prometheus metrics at `/metrics` when enabled (default), for exam
 curl http://127.0.0.1:2112/metrics
 ```
 
-## Local Development
+## Contributing
 
-Set your PSK in `config.ini` or via environment variable:
-
-```bash
-export ICMP_PROXY_PSK=dev-secret
-```
-
-Warning: the built-in default PSK is `change-me`. Change it before exposing either side to untrusted networks.
-
-Run syntax checks:
-
-```bash
-python3 -m py_compile icmp_proxy/*.py tests/*.py
-```
-
-Run formatting checks:
-
-```bash
-python3 -m isort --check-only icmp_proxy tests
-python3 -m black --check icmp_proxy tests
-```
-
-Run non-root tests:
-
-```bash
-python3 -m pytest -m "not requires_root"
-```
-
-Run root E2E tests:
-
-```bash
-./run_e2e_tests.sh local
-./run_e2e_tests.sh external
-```
+Use [`CONTRIBUTING.md`](CONTRIBUTING.md) for local setup, coding style (`black` + `isort`), and required test commands.
 
 ## Running
 
