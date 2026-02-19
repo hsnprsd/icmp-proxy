@@ -103,16 +103,3 @@ Server exports Prometheus metrics at `/metrics` when enabled (default), for exam
 ```bash
 curl http://127.0.0.1:2112/metrics
 ```
-
-## Contributing
-
-Use [`CONTRIBUTING.md`](CONTRIBUTING.md) for local setup, coding style (`black` + `isort`), and required test commands.
-
-## Running
-
-Use [`USAGE.md`](USAGE.md) for complete operator instructions:
-
-- Manual server/client execution
-- End-to-end verification (`curl` via HTTP and SOCKS5 proxies)
-- Systemd deployment and service lifecycle commands
-- Troubleshooting and production hardening guidance
