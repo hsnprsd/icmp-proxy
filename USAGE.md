@@ -5,21 +5,21 @@ It covers both manual execution and systemd-based deployment.
 
 ## Prerequisites
 
-- Linux host(s) with Python 3 available.
+- Linux or macOS host(s) with Python 3 available.
 - Privilege to open raw ICMP sockets:
-  - Run as `root`, or
-  - Run with `CAP_NET_RAW` capability.
+  - Linux: run as `root`, or run with `CAP_NET_RAW` capability.
+  - macOS: run as `root`/`sudo` (no `CAP_NET_RAW` equivalent).
 - Network path must allow ICMP Echo Request/Reply between client and server hosts.
 - A shared PSK must be configured on both sides.
 - Do not use the default PSK `change-me` outside local testing.
 
-For local loopback testing on one machine, disable kernel ICMP echo replies first:
+For local loopback testing on one Linux machine, disable kernel ICMP echo replies first:
 
 ```bash
 sudo sysctl -w net.ipv4.icmp_echo_ignore_all=1
 ```
 
-Restore when done:
+Restore when done (Linux):
 
 ```bash
 sudo sysctl -w net.ipv4.icmp_echo_ignore_all=0

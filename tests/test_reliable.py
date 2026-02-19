@@ -46,7 +46,12 @@ class FakeRawSocket:
 
 def _wrap_frame_for_recv(frame: Frame) -> bytes:
     icmp_packet = ICMPPacket(icmp_type=0, icmp_code=0, payload=frame.encode())
-    return (b"\x00" * 20) + icmp_packet.to_bytes()
+    return bytes([0x45]) + (b"\x00" * 19) + icmp_packet.to_bytes()
+
+
+def _wrap_frame_for_recv_no_ipv4(frame: Frame) -> bytes:
+    icmp_packet = ICMPPacket(icmp_type=0, icmp_code=0, payload=frame.encode())
+    return icmp_packet.to_bytes()
 
 
 def _decode_sent_frames(fake_socket: FakeRawSocket) -> list[Frame]:
@@ -189,10 +194,36 @@ def test_inbound_type_mismatch_is_ignored() -> None:
             seq_num=1,
             flags=FLAG_RELIABLE,
         ).encode())
-        fake.inject_packet((b"\x00" * 20) + wrong_type_packet.to_bytes())
+        fake.inject_packet(bytes([0x45]) + (b"\x00" * 19) + wrong_type_packet.to_bytes())
 
         assert session.wait_for_frame(lambda _frame: True, timeout_s=0.2) is None
         assert fake.sent_packets == []
+    finally:
+        session.stop()
+        fake.close()
+
+
+def test_bare_icmp_payload_is_accepted() -> None:
+    fake = FakeRawSocket()
+    session = _new_session(fake)
+    session.start()
+    try:
+        inbound = Frame.make(
+            msg_type=MessageType.DATA,
+            payload=b"ok",
+            session_id=1,
+            stream_id=6,
+            seq_num=3,
+            flags=FLAG_RELIABLE,
+        )
+        fake.inject_packet(_wrap_frame_for_recv_no_ipv4(inbound))
+
+        received = session.wait_for_frame(
+            lambda frame: frame.stream_id == 6 and frame.msg_type == MessageType.DATA,
+            timeout_s=1.0,
+        )
+        assert received is not None
+        assert received.payload == b"ok"
     finally:
         session.stop()
         fake.close()

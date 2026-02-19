@@ -11,6 +11,22 @@ IPV4_HEADER_LEN = 20
 ICMP_HEADER_LEN = 8
 
 
+def _extract_icmp_payload(buf: bytes) -> bytes:
+    if len(buf) < ICMP_HEADER_LEN:
+        raise ValueError("packet too short")
+
+    first_byte = buf[0]
+    version = first_byte >> 4
+    ihl = first_byte & 0x0F
+    ipv4_header_len = ihl * 4
+    if version == 4 and ihl >= 5:
+        if len(buf) < ipv4_header_len + ICMP_HEADER_LEN:
+            raise ValueError("packet too short")
+        return buf[ipv4_header_len:]
+
+    return buf
+
+
 def internet_checksum(data: bytes) -> int:
     if len(data) % 2:
         data += b"\x00"
@@ -29,9 +45,7 @@ class ICMPPacket:
 
     @staticmethod
     def from_bytes(buf: bytes) -> "ICMPPacket":
-        if len(buf) < IPV4_HEADER_LEN + ICMP_HEADER_LEN:
-            raise ValueError("packet too short")
-        icmp_packet = buf[IPV4_HEADER_LEN:]
+        icmp_packet = _extract_icmp_payload(buf)
         icmp_type, icmp_code, icmp_checksum, _id, _seq = struct.unpack(
             "!BBHHH", icmp_packet[:ICMP_HEADER_LEN]
         )

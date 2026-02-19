@@ -109,7 +109,11 @@ class Server:
             )
         else:
             LOGGER.info("prometheus metrics endpoint disabled")
-        self.socket = socket.socket(socket.AF_INET, socket.SOCK_RAW, socket.IPPROTO_ICMP)
+        try:
+            self.socket = socket.socket(socket.AF_INET, socket.SOCK_RAW, socket.IPPROTO_ICMP)
+        except PermissionError:
+            LOGGER.error("raw ICMP socket requires elevated privileges (root/sudo on macOS)")
+            raise
         self.socket.bind((self.config.bind_host, 0))
         session = self.config.session
         self.reliable = ReliableICMPSession(

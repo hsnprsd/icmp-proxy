@@ -4,10 +4,10 @@ This repository uses Python 3 and `pytest` for tests.
 
 ## Prerequisites
 
-- Linux host with Python 3.
+- Linux or macOS host with Python 3.
 - Permission to run raw ICMP sockets:
-  - run as `root`, or
-  - run with `CAP_NET_RAW`.
+  - Linux: run as `root`, or run with `CAP_NET_RAW`.
+  - macOS: run as `root`/`sudo` (no `CAP_NET_RAW` equivalent).
 
 ## Setup
 
@@ -47,13 +47,13 @@ python3 -m black --check icmp_proxy tests
 
 For complete runtime details, see `USAGE.md`.
 
-For single-machine loopback testing, disable kernel ICMP echo replies:
+For single-machine loopback testing on Linux, disable kernel ICMP echo replies:
 
 ```bash
 sudo sysctl -w net.ipv4.icmp_echo_ignore_all=1
 ```
 
-Restore after testing:
+Restore after testing (Linux):
 
 ```bash
 sudo sysctl -w net.ipv4.icmp_echo_ignore_all=0

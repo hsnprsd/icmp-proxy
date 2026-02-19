@@ -6,6 +6,10 @@ Production-oriented ICMP tunnel prototype with:
 - Reliable delivery (retransmit + duplicate suppression + ACK via `ack_num`)
 - Stream lifecycle messages: `OPEN_STREAM`, `DATA`, `CLOSE`
 
+Runtime support:
+- Linux and macOS are supported for manual server/client execution.
+- Raw ICMP sockets require elevated privileges (`root`/`sudo` on macOS, or `root`/`CAP_NET_RAW` on Linux).
+
 ## Documentation
 
 - Design document: [`DESIGN.md`](DESIGN.md)

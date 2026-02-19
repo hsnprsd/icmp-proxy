@@ -521,7 +521,11 @@ class Client:
         self._open_lock = Lock()
 
     def __enter__(self) -> "Client":
-        self.socket = socket.socket(socket.AF_INET, socket.SOCK_RAW, socket.IPPROTO_ICMP)
+        try:
+            self.socket = socket.socket(socket.AF_INET, socket.SOCK_RAW, socket.IPPROTO_ICMP)
+        except PermissionError:
+            LOGGER.error("raw ICMP socket requires elevated privileges (root/sudo on macOS)")
+            raise
         self.socket.bind(("0.0.0.0", 0))
         session = self.config.session
         self.reliable = ReliableICMPSession(
