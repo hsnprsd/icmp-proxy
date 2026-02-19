@@ -9,6 +9,7 @@ Production-oriented ICMP tunnel prototype with:
 ## Documentation
 
 - Design document: [`DESIGN.md`](DESIGN.md)
+- Usage guide (server/client runbook): [`USAGE.md`](USAGE.md)
 
 ## Compatibility Policy
 
@@ -128,34 +129,9 @@ Run root E2E tests:
 
 ## Running
 
-Disable kernel echo replies for local end-to-end testing:
+Use [`USAGE.md`](USAGE.md) for complete operator instructions:
 
-```bash
-sudo sysctl -w net.ipv4.icmp_echo_ignore_all=1
-```
-
-Start server:
-
-```bash
-sudo -E ICMP_PROXY_PSK=dev-secret ICMP_PROXY_CLIENT_ID=default-client python3 -m icmp_proxy.server
-```
-
-Start client:
-
-```bash
-sudo -E ICMP_PROXY_PSK=dev-secret ICMP_PROXY_CLIENT_ID=default-client ICMP_PROXY_REMOTE_HOST=127.0.0.1 python3 -m icmp_proxy.client
-```
-
-The client process starts both local proxy listeners by default:
-- HTTP proxy: `127.0.0.1:8080`
-- SOCKS5 proxy (no-auth, `CONNECT` + `UDP ASSOCIATE`): `127.0.0.1:1080`
-
-Configure your application for either endpoint. For HTTPS over HTTP proxy, clients should use normal `CONNECT` mode.
-SOCKS5 UDP forwarding supports unfragmented datagrams (`FRAG=0`).
-SOCKS5 `CONNECT` and UDP relay support IPv4, IPv6, and domain destinations; set `ICMP_PROXY_SOCKS_PROXY_BIND_HOST` to an IPv6 host (for example `::1`) to listen on IPv6 locally.
-
-Restore host default:
-
-```bash
-sudo sysctl -w net.ipv4.icmp_echo_ignore_all=0
-```
+- Manual server/client execution
+- End-to-end verification (`curl` via HTTP and SOCKS5 proxies)
+- Systemd deployment and service lifecycle commands
+- Troubleshooting and production hardening guidance
