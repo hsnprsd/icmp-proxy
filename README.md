@@ -120,6 +120,13 @@ Run syntax checks:
 python3 -m py_compile icmp_proxy/*.py tests/*.py
 ```
 
+Run formatting checks:
+
+```bash
+python3 -m isort --check-only icmp_proxy tests
+python3 -m black --check icmp_proxy tests
+```
+
 Run non-root tests:
 
 ```bash

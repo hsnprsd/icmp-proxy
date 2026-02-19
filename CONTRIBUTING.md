@@ -25,6 +25,24 @@ python3 -m pip install --upgrade pip
 python3 -m pip install -r requirements.txt
 ```
 
+## Coding Style
+
+The project uses `isort` + `black` for Python formatting.
+
+Format imports and code:
+
+```bash
+python3 -m isort icmp_proxy tests
+python3 -m black icmp_proxy tests
+```
+
+Check formatting without changing files:
+
+```bash
+python3 -m isort --check-only icmp_proxy tests
+python3 -m black --check icmp_proxy tests
+```
+
 ## Run Locally
 
 For complete runtime details, see `USAGE.md`.
