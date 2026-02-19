@@ -25,6 +25,7 @@ from .protocol import (
     DatagramPacket,
     Hello,
     HelloAck,
+    Heartbeat,
     MessageType,
     OpenDatagram,
     OpenErr,
@@ -519,6 +520,8 @@ class Client:
         self.session_id = 0
         self.client_nonce = b""
         self._open_lock = Lock()
+        self._heartbeat_stop_event = Event()
+        self._heartbeat_thread: Thread | None = None
 
     def __enter__(self) -> "Client":
         try:
@@ -555,8 +558,41 @@ class Client:
         return self
 
     def __exit__(self, exc_type, exc_value, traceback) -> None:
+        self._stop_heartbeat()
         self.reliable.stop()
         self.socket.close()
+
+    def _heartbeat_loop(self, interval_s: float) -> None:
+        while not self._heartbeat_stop_event.wait(interval_s):
+            if self.session_id == 0:
+                continue
+            self.reliable.send_untracked(
+                msg_type=MessageType.HEARTBEAT,
+                session_id=self.session_id,
+                stream_id=0,
+                payload=Heartbeat().encode(),
+            )
+
+    def _start_heartbeat(self) -> None:
+        interval_ms = self.config.session.heartbeat_interval_ms
+        if interval_ms <= 0:
+            return
+        if self._heartbeat_thread is not None and self._heartbeat_thread.is_alive():
+            return
+        self._heartbeat_stop_event.clear()
+        self._heartbeat_thread = Thread(
+            target=self._heartbeat_loop,
+            args=(interval_ms / 1000.0,),
+            daemon=True,
+            name="heartbeat-sender",
+        )
+        self._heartbeat_thread.start()
+
+    def _stop_heartbeat(self) -> None:
+        self._heartbeat_stop_event.set()
+        if self._heartbeat_thread is not None:
+            self._heartbeat_thread.join(timeout=1.0)
+            self._heartbeat_thread = None
 
     def authenticate(self) -> int:
         self.client_nonce = generate_nonce()
@@ -609,6 +645,7 @@ class Client:
             timeout_s=1.0,
         ):
             LOGGER.warning("HELLO ack was not confirmed by retransmit state in time")
+        self._start_heartbeat()
         return self.session_id
 
     def _open(self, msg_type: MessageType, payload: bytes) -> int:

@@ -73,6 +73,7 @@ Maximum frame payload is `65535` bytes (`MAX_PAYLOAD_LEN`), but practical data c
 - `CLOSE_ACK`
 - `KEEPALIVE`
 - `OPEN_DATAGRAM`
+- `HEARTBEAT`
 
 ### Flags
 - `FLAG_RELIABLE (0x01)`: frame participates in reliable delivery.
@@ -86,7 +87,7 @@ Maximum frame payload is `65535` bytes (`MAX_PAYLOAD_LEN`), but practical data c
 - `OPEN_OK`: assigned `stream_id`.
 - `OPEN_ERR`: `error_code` + `reason`.
 - `DATA`: opaque bytes (TCP bytes or encoded `DatagramPacket`).
-- `CLOSE`, `CLOSE_ACK`, `KEEPALIVE`: empty payload.
+- `CLOSE`, `CLOSE_ACK`, `KEEPALIVE`, `HEARTBEAT`: empty payload.
 - `DatagramPacket`: address type + remote host + remote port + UDP payload (IPv4/IPv6/domain).
 
 ## Authentication and Session Establishment
@@ -113,6 +114,7 @@ Maximum frame payload is `65535` bytes (`MAX_PAYLOAD_LEN`), but practical data c
 - Session IDs are bound to the source host observed during handshake.
 - Server caches recent successful HELLO nonces to re-send the same `HELLO_ACK` for retransmitted HELLO frames within replay TTL.
 - Idle authenticated sessions are evicted after `session_idle_timeout_ms`.
+- Client sends periodic `HEARTBEAT` frames (stream `0`) to keep otherwise-idle sessions active.
 
 ## Reliable Transport Behavior (`ReliableICMPSession`)
 
@@ -195,7 +197,7 @@ When enabled (`flowcontrol_enable`), transport adjusts stream window sizes using
 - Endpoints/listeners:
   - server: `ICMP_PROXY_BIND_HOST`, `ICMP_PROXY_CLIENT_HOST`
   - client: `ICMP_PROXY_REMOTE_HOST`, HTTP/SOCKS bind vars
-- Session lifecycle: `ICMP_PROXY_SESSION_IDLE_TIMEOUT_MS`
+- Session lifecycle: `ICMP_PROXY_SESSION_IDLE_TIMEOUT_MS`, `ICMP_PROXY_HEARTBEAT_INTERVAL_MS`
 
 ## Operational Notes
 - Entry points:

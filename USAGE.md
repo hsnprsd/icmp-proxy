@@ -215,4 +215,5 @@ sudo journalctl -u icmp-proxy-client -f
 - Keep `ICMP_PROXY_HTTP_PROXY_BIND_HOST=127.0.0.1` and `ICMP_PROXY_SOCKS_PROXY_BIND_HOST=127.0.0.1` for local-only access.
 - Rotate PSKs regularly; do not commit secrets to source control.
 - Review/re-tune reliability and flow-control parameters (`ICMP_PROXY_RETX_*`, `ICMP_PROXY_MAX_INFLIGHT_*`, `ICMP_PROXY_FLOWCONTROL_*`) for high latency/loss environments.
+- Keep `ICMP_PROXY_HEARTBEAT_INTERVAL_MS` below `ICMP_PROXY_SESSION_IDLE_TIMEOUT_MS` so idle authenticated sessions stay alive.
 - Keep an eye on session behavior (`ICMP_PROXY_SESSION_IDLE_TIMEOUT_MS`) and Prometheus metrics for operational health.

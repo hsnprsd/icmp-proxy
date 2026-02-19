@@ -33,6 +33,7 @@ _ENV_TO_INI_KEY: dict[str, tuple[str, str]] = {
     "ICMP_PROXY_FLOWCONTROL_LOSS_THRESHOLD": ("session", "flowcontrol_loss_threshold"),
     "ICMP_PROXY_STATS_INTERVAL_MS": ("session", "stats_interval_ms"),
     "ICMP_PROXY_PERFORMANCE_METRICS_ENABLE": ("session", "performance_metrics_enable"),
+    "ICMP_PROXY_HEARTBEAT_INTERVAL_MS": ("session", "heartbeat_interval_ms"),
     "ICMP_PROXY_BIND_HOST": ("server", "bind_host"),
     "ICMP_PROXY_CLIENT_HOST": ("server", "client_host"),
     "ICMP_PROXY_TARGET_CONNECT_TIMEOUT_MS": ("server", "target_connect_timeout_ms"),
@@ -156,6 +157,7 @@ class SessionConfig:
     seen_limit_per_stream: int
     max_inflight_per_stream: int
     mtu_payload: int
+    heartbeat_interval_ms: int = 15_000
     max_global_inflight: int = 2048
     min_inflight_per_stream: int = 32
     flowcontrol_enable: bool = True
@@ -257,6 +259,7 @@ def _load_session_config(resolver: _ConfigResolver) -> SessionConfig:
         flowcontrol_loss_threshold=max(0.0, resolver.env_float("ICMP_PROXY_FLOWCONTROL_LOSS_THRESHOLD", 0.02)),
         stats_interval_ms=max(100, resolver.env_int("ICMP_PROXY_STATS_INTERVAL_MS", 1000)),
         performance_metrics_enable=resolver.env_bool("ICMP_PROXY_PERFORMANCE_METRICS_ENABLE", False),
+        heartbeat_interval_ms=max(0, resolver.env_int("ICMP_PROXY_HEARTBEAT_INTERVAL_MS", 15_000)),
     )
 
 

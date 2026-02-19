@@ -33,6 +33,7 @@ _SESSION_ENV_VARS = [
     "ICMP_PROXY_FLOWCONTROL_LOSS_THRESHOLD",
     "ICMP_PROXY_STATS_INTERVAL_MS",
     "ICMP_PROXY_PERFORMANCE_METRICS_ENABLE",
+    "ICMP_PROXY_HEARTBEAT_INTERVAL_MS",
 ]
 
 _CLIENT_ONLY_ENV_VARS = [
@@ -97,6 +98,7 @@ def test_load_session_config_defaults(monkeypatch) -> None:
     assert config.flowcontrol_loss_threshold == 0.02
     assert config.stats_interval_ms == 1000
     assert config.performance_metrics_enable is False
+    assert config.heartbeat_interval_ms == 15000
 
 
 def test_load_session_config_clamps_min_inflight_to_max(monkeypatch) -> None:
@@ -134,6 +136,15 @@ def test_load_session_config_enables_performance_metrics(monkeypatch) -> None:
     config = load_session_config()
 
     assert config.performance_metrics_enable is True
+
+
+def test_load_session_config_disables_heartbeat(monkeypatch) -> None:
+    _clear_session_env(monkeypatch)
+    monkeypatch.setenv("ICMP_PROXY_HEARTBEAT_INTERVAL_MS", "0")
+
+    config = load_session_config()
+
+    assert config.heartbeat_interval_ms == 0
 
 
 def test_load_client_config_socks_defaults(monkeypatch) -> None:
@@ -184,6 +195,7 @@ max_inflight_per_stream = 64
 min_inflight_per_stream = 16
 flowcontrol_enable = 0
 performance_metrics_enable = 1
+heartbeat_interval_ms = 12345
 
 [client]
 server_host = 10.1.2.3
@@ -204,6 +216,7 @@ socks_proxy_bind_port = 11080
     assert config.session.min_inflight_per_stream == 16
     assert config.session.flowcontrol_enable is False
     assert config.session.performance_metrics_enable is True
+    assert config.session.heartbeat_interval_ms == 12345
     assert config.server_host == "10.1.2.3"
     assert config.http_proxy_bind_host == "0.0.0.0"
     assert config.http_proxy_bind_port == 18080

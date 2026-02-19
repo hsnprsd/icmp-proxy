@@ -1,7 +1,7 @@
 from icmp_proxy.auth import now_ms, sign_client_hello
 from icmp_proxy.config import CommonConfig, ServerConfig, SessionConfig
-from icmp_proxy.protocol import Frame, Hello, MessageType
-from icmp_proxy.server import Server
+from icmp_proxy.protocol import Frame, Heartbeat, Hello, MessageType
+from icmp_proxy.server import Server, SessionState
 
 
 class FakeReliable:
@@ -227,6 +227,29 @@ def test_process_frame_rejects_mismatched_source_host() -> None:
     server.process_frame(open_datagram_frame, "10.1.1.2")
 
     assert len(server.reliable.sent) == before  # type: ignore[attr-defined]
+
+
+def test_process_frame_heartbeat_refreshes_session_activity(monkeypatch) -> None:
+    server = Server(_server_config())
+    server.reliable = FakeReliable()  # type: ignore[assignment]
+    session_id = 4242
+    server.sessions[session_id] = SessionState(
+        remote_host="10.9.9.9",
+        client_nonce=b"h" * 16,
+        last_activity_ms=10,
+    )
+    monkeypatch.setattr("icmp_proxy.server.now_ms", lambda: 99)
+
+    heartbeat_frame = Frame.make(
+        msg_type=MessageType.HEARTBEAT,
+        payload=Heartbeat().encode(),
+        session_id=session_id,
+        stream_id=0,
+        seq_num=1,
+    )
+    server.process_frame(heartbeat_frame, "10.9.9.9")
+
+    assert server.sessions[session_id].last_activity_ms == 99
 
 
 def test_server_context_starts_prometheus_when_enabled(monkeypatch) -> None:

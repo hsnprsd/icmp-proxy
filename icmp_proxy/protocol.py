@@ -21,6 +21,7 @@ class MessageType(IntEnum):
     CLOSE_ACK = 8
     KEEPALIVE = 9
     OPEN_DATAGRAM = 10
+    HEARTBEAT = 11
 
 
 FLAG_RELIABLE = 0x01
@@ -378,3 +379,15 @@ class Keepalive:
         if data:
             raise ValueError("keepalive payload must be empty")
         return Keepalive()
+
+
+@dataclass(frozen=True)
+class Heartbeat:
+    def encode(self) -> bytes:
+        return b""
+
+    @staticmethod
+    def decode(data: bytes) -> "Heartbeat":
+        if data:
+            raise ValueError("heartbeat payload must be empty")
+        return Heartbeat()

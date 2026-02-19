@@ -41,6 +41,7 @@ max_inflight_per_stream = 1024
 min_inflight_per_stream = 32
 max_global_inflight = 2048
 mtu_payload = 1200
+heartbeat_interval_ms = 15000
 
 [server]
 bind_host = 0.0.0.0
@@ -88,6 +89,7 @@ Boolean parsing for all `*_ENABLE` settings: values `0`, `false`, `no`, `off` (c
 | `ICMP_PROXY_FLOWCONTROL_LOSS_THRESHOLD` | `[session].flowcontrol_loss_threshold` | `0.02` | Loss ratio threshold that triggers window decrease; clamped to at least `0.0`. |
 | `ICMP_PROXY_STATS_INTERVAL_MS` | `[session].stats_interval_ms` | `1000` | Interval for flow-control/performance stat updates; clamped to at least `100`. |
 | `ICMP_PROXY_PERFORMANCE_METRICS_ENABLE` | `[session].performance_metrics_enable` | `0` | Emits periodic performance logs when enabled. |
+| `ICMP_PROXY_HEARTBEAT_INTERVAL_MS` | `[session].heartbeat_interval_ms` | `15000` | Client heartbeat cadence used to keep authenticated sessions active on idle links (`0` disables heartbeats). |
 | `ICMP_PROXY_BIND_HOST` | `[server].bind_host` | `0.0.0.0` | Local source IP used by server raw ICMP socket. |
 | `ICMP_PROXY_CLIENT_HOST` | `[server].client_host` | `127.0.0.1` | Destination host for ICMP replies sent by server. |
 | `ICMP_PROXY_TARGET_CONNECT_TIMEOUT_MS` | `[server].target_connect_timeout_ms` | `3000` | Timeout for outbound target TCP connects initiated by server streams. |

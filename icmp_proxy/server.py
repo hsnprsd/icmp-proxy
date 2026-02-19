@@ -27,6 +27,7 @@ from .protocol import (
     Data,
     DatagramPacket,
     Frame,
+    Heartbeat,
     Hello,
     HelloAck,
     MessageType,
@@ -617,6 +618,12 @@ class Server:
             remote_host=remote_host,
         )
 
+    def process_heartbeat(self, frame: Frame) -> None:
+        try:
+            Heartbeat.decode(frame.payload)
+        except ValueError:
+            return
+
     def on_retry_exhausted(self, session_id: int, stream_id: int, msg_type: MessageType) -> None:
         if stream_id == 0:
             return
@@ -655,6 +662,8 @@ class Server:
             self.process_data(frame)
         elif frame.msg_type == MessageType.CLOSE:
             self.process_close(frame)
+        elif frame.msg_type == MessageType.HEARTBEAT:
+            self.process_heartbeat(frame)
 
 
 def main() -> None:
